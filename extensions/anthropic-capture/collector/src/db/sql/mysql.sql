@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS anthropic_interactions (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS collector_offsets (
-  file_path VARCHAR(1024) PRIMARY KEY,
+  file_path VARCHAR(512) PRIMARY KEY,
   inode VARCHAR(64),
   offset BIGINT NOT NULL,
   remainder LONGTEXT,
