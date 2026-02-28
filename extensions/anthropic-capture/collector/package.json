@@ -1,0 +1,14 @@
+{
+  "name": "anthropic-capture-collector",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Collector for Anthropic upstream capture JSONL -> PostgreSQL",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  }
+}
