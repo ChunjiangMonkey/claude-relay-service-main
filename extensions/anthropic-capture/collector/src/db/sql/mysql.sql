@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS anthropic_interactions (
   response_json JSON,
   assistant_text_full LONGTEXT,
   tool_calls JSON,
-  usage JSON,
+  usage_json JSON,
   stop_reason VARCHAR(255),
   http_status INT,
   latency_ms INT,
