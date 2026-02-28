@@ -6,7 +6,8 @@ This extension captures **Anthropic upstream** requests/responses (including str
 
 - Runtime hook: `hook/anthropic-hook.js`
   - Injected via `NODE_OPTIONS=--require ...`
-  - Captures only configured upstream hosts (default `api.anthropic.com`)
+  - Captures only configured upstream hosts/methods/paths (default `api.anthropic.com`, `POST`, `/v1/messages`)
+  - Auto-decompresses non-stream upstream payload (`gzip`/`br`/`deflate`, with gzip magic fallback)
   - Writes JSONL files:
     - `anthropic-upstream-requests.jsonl`
     - `anthropic-upstream-responses.jsonl`
@@ -26,6 +27,8 @@ Set env vars on relay service:
 ANTHROPIC_CAPTURE_ENABLED=true
 ANTHROPIC_CAPTURE_DIR=/data/relay-capture
 ANTHROPIC_CAPTURE_HOSTS=api.anthropic.com
+ANTHROPIC_CAPTURE_METHODS=POST
+ANTHROPIC_CAPTURE_PATH_PREFIXES=/v1/messages
 ANTHROPIC_CAPTURE_MAX_RECORD_BYTES=16777216
 ANTHROPIC_CAPTURE_MAX_FILE_BYTES=268435456
 ANTHROPIC_CAPTURE_BACKUP_FILES=3
@@ -47,7 +50,7 @@ sh /app/extensions/anthropic-capture/scripts/setup-capture-links.sh
 Example startup command in Zeabur:
 
 ```bash
-sh -lc 'sh /app/extensions/anthropic-capture/scripts/setup-capture-links.sh && node src/app.js'
+sh -lc 'export NODE_OPTIONS="--require /app/extensions/anthropic-capture/hook/anthropic-hook.js"; sh /app/extensions/anthropic-capture/scripts/setup-capture-links.sh; exec node src/app.js'
 ```
 
 ## 2) Collector service setup

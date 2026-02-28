@@ -4,6 +4,7 @@ const https = require('https')
 const fs = require('fs/promises')
 const path = require('path')
 const crypto = require('crypto')
+const zlib = require('zlib')
 
 const PATCH_SENTINEL = Symbol.for('claude_relay.anthropic_capture_hook.installed')
 
@@ -26,6 +27,10 @@ const config = {
   enabled: isEnabled(process.env.ANTHROPIC_CAPTURE_ENABLED, true),
   captureDir: process.env.ANTHROPIC_CAPTURE_DIR || DEFAULT_CAPTURE_DIR,
   hosts: parseHosts(process.env.ANTHROPIC_CAPTURE_HOSTS || 'api.anthropic.com'),
+  captureMethods: parseCaptureMethods(process.env.ANTHROPIC_CAPTURE_METHODS || 'POST'),
+  capturePathPrefixes: parseCapturePathPrefixes(
+    process.env.ANTHROPIC_CAPTURE_PATH_PREFIXES || '/v1/messages'
+  ),
   maxRecordBytes: parsePositiveInt(
     process.env.ANTHROPIC_CAPTURE_MAX_RECORD_BYTES,
     DEFAULT_MAX_RECORD_BYTES
@@ -48,6 +53,8 @@ patchHttpsRequest()
 logDebug('Anthropic capture hook installed', {
   captureDir: config.captureDir,
   hosts: Array.from(config.hosts),
+  captureMethods: config.captureMethods ? Array.from(config.captureMethods) : ['*'],
+  capturePathPrefixes: config.capturePathPrefixes || ['*'],
   maxRecordBytes: config.maxRecordBytes,
   maxFileBytes: config.maxFileBytes
 })
@@ -75,6 +82,31 @@ function parseHosts(rawValue) {
       .map((item) => item.trim().toLowerCase())
       .filter(Boolean)
   )
+}
+
+function parseCsvList(rawValue, fallbackRaw) {
+  const source = rawValue !== undefined && rawValue !== null && rawValue !== '' ? rawValue : fallbackRaw
+  return String(source || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function parseCaptureMethods(rawValue) {
+  const methods = parseCsvList(rawValue, 'POST')
+  if (methods.includes('*')) {
+    return null
+  }
+  return new Set(methods.map((item) => item.toUpperCase()))
+}
+
+function parseCapturePathPrefixes(rawValue) {
+  const prefixes = parseCsvList(rawValue, '/v1/messages')
+  if (prefixes.includes('*')) {
+    return null
+  }
+  const normalized = prefixes.map((item) => (item.startsWith('/') ? item : `/${item}`))
+  return normalized.length > 0 ? normalized : ['/v1/messages']
 }
 
 function maskSecret(value) {
@@ -222,7 +254,19 @@ function shouldCaptureRequest(meta) {
   if (!meta || !meta.hostname) {
     return false
   }
-  return config.hosts.has(meta.hostname)
+  if (!config.hosts.has(meta.hostname)) {
+    return false
+  }
+  if (config.captureMethods && !config.captureMethods.has(String(meta.method || '').toUpperCase())) {
+    return false
+  }
+  if (
+    config.capturePathPrefixes &&
+    !config.capturePathPrefixes.some((prefix) => String(meta.path || '').startsWith(prefix))
+  ) {
+    return false
+  }
+  return true
 }
 
 function createTraceId() {
@@ -454,7 +498,117 @@ function buildStreamRecord(traceId, requestRecord, requestMeta, responseMeta, st
   }
 }
 
-function buildNonStreamRecord(traceId, requestRecord, requestMeta, responseMeta, responseBodyRaw, timing, error) {
+function getContentEncoding(headers) {
+  const raw =
+    getHeaderCaseInsensitive(headers, 'content-encoding') ||
+    getHeaderCaseInsensitive(headers, 'Content-Encoding') ||
+    ''
+  const first = String(raw || '')
+    .split(',')
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean)[0]
+  return first || ''
+}
+
+function isGzipMagic(buffer) {
+  return Boolean(buffer && buffer.length >= 2 && buffer[0] === 0x1f && buffer[1] === 0x8b)
+}
+
+function decodeCompressedBody(buffer, headers) {
+  const encoding = getContentEncoding(headers)
+
+  const identityResult = {
+    buffer,
+    contentEncoding: encoding || 'identity',
+    decompressed: false,
+    decodeError: null,
+    decodeSource: 'identity'
+  }
+
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+    return identityResult
+  }
+
+  try {
+    if (encoding === 'gzip' || encoding === 'x-gzip') {
+      return {
+        buffer: zlib.gunzipSync(buffer),
+        contentEncoding: 'gzip',
+        decompressed: true,
+        decodeError: null,
+        decodeSource: 'content-encoding'
+      }
+    }
+
+    if (encoding === 'br') {
+      return {
+        buffer: zlib.brotliDecompressSync(buffer),
+        contentEncoding: 'br',
+        decompressed: true,
+        decodeError: null,
+        decodeSource: 'content-encoding'
+      }
+    }
+
+    if (encoding === 'deflate') {
+      try {
+        return {
+          buffer: zlib.inflateSync(buffer),
+          contentEncoding: 'deflate',
+          decompressed: true,
+          decodeError: null,
+          decodeSource: 'content-encoding'
+        }
+      } catch (_) {
+        return {
+          buffer: zlib.inflateRawSync(buffer),
+          contentEncoding: 'deflate',
+          decompressed: true,
+          decodeError: null,
+          decodeSource: 'content-encoding-inflateRaw'
+        }
+      }
+    }
+  } catch (error) {
+    return {
+      ...identityResult,
+      decodeError: `${encoding || 'unknown'}_decode_failed: ${error.message || String(error)}`,
+      decodeSource: 'content-encoding'
+    }
+  }
+
+  if (!encoding && isGzipMagic(buffer)) {
+    try {
+      return {
+        buffer: zlib.gunzipSync(buffer),
+        contentEncoding: 'gzip',
+        decompressed: true,
+        decodeError: null,
+        decodeSource: 'magic'
+      }
+    } catch (error) {
+      return {
+        ...identityResult,
+        contentEncoding: 'gzip',
+        decodeError: `gzip_magic_decode_failed: ${error.message || String(error)}`,
+        decodeSource: 'magic'
+      }
+    }
+  }
+
+  return identityResult
+}
+
+function buildNonStreamRecord(
+  traceId,
+  requestRecord,
+  requestMeta,
+  responseMeta,
+  responseBodyRaw,
+  timing,
+  error,
+  decodeMeta
+) {
   const responseJson = parseMaybeJson(responseBodyRaw)
   const requestJson = requestRecord.requestBodyJson || null
 
@@ -482,6 +636,10 @@ function buildNonStreamRecord(traceId, requestRecord, requestMeta, responseMeta,
     response: {
       body_raw: responseBodyRaw,
       body_json: responseJson,
+      content_encoding: decodeMeta && decodeMeta.contentEncoding ? decodeMeta.contentEncoding : 'identity',
+      decompressed: Boolean(decodeMeta && decodeMeta.decompressed),
+      decode_source: decodeMeta && decodeMeta.decodeSource ? decodeMeta.decodeSource : 'identity',
+      decode_error: decodeMeta && decodeMeta.decodeError ? decodeMeta.decodeError : null,
       usage: responseJson && responseJson.usage ? responseJson.usage : null,
       stop_reason: responseJson && responseJson.stop_reason ? responseJson.stop_reason : null,
       message_id: responseJson && responseJson.id ? responseJson.id : null,
@@ -656,7 +814,9 @@ function patchHttpsRequest() {
           return
         }
 
-        const responseBodyRaw = Buffer.concat(responseChunks).toString('utf8')
+        const responseBodyBuffer = Buffer.concat(responseChunks)
+        const decodeMeta = decodeCompressedBody(responseBodyBuffer, responseHeaders)
+        const responseBodyRaw = decodeMeta.buffer.toString('utf8')
         const nonStreamRecord = buildNonStreamRecord(
           traceId,
           requestRecord,
@@ -664,7 +824,8 @@ function patchHttpsRequest() {
           responseMeta,
           responseBodyRaw,
           { startedAt, endedAt, latencyMs },
-          error
+          error,
+          decodeMeta
         )
         writeJsonl(RESPONSES_FILE, nonStreamRecord)
       }
