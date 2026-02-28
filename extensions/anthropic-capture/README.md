@@ -14,7 +14,7 @@ This extension captures **Anthropic upstream** requests/responses (including str
 - Collector: `collector/src/index.js`
   - Tails JSONL files with offsets
   - De-duplicates by SHA-256 line hash
-  - Persists to PostgreSQL (`upstream_events_raw`, `anthropic_interactions`)
+  - Persists to MySQL (default) or PostgreSQL (`upstream_events_raw`, `anthropic_interactions`)
 
 ## 1) Relay service setup (Zeabur)
 
@@ -62,10 +62,15 @@ npm install
 npm run start
 ```
 
-Required env:
+Required env (MySQL default):
 
 ```bash
-DATABASE_URL=postgres://user:pass@host:5432/dbname
+COLLECTOR_DB_BACKEND=mysql
+MYSQL_HOST=127.0.0.1
+MYSQL_PORT=3306
+MYSQL_USER=root
+MYSQL_PASSWORD=change-me
+MYSQL_DATABASE=anthropic_capture
 ANTHROPIC_CAPTURE_DIR=/data/relay-capture
 COLLECTOR_POLL_INTERVAL_MS=2000
 ```
@@ -78,11 +83,23 @@ COLLECTOR_DEBUG=false
 COLLECTOR_DB_POOL_MAX=10
 ```
 
-## 3) PostgreSQL schema
+PostgreSQL compatibility mode:
+
+```bash
+COLLECTOR_DB_BACKEND=postgres
+DATABASE_URL=postgres://user:pass@host:5432/dbname
+ANTHROPIC_CAPTURE_DIR=/data/relay-capture
+COLLECTOR_POLL_INTERVAL_MS=2000
+```
+
+## 3) Schema
 
 Collector auto-creates schema at startup.
 
-Reference SQL: `sql/schema.sql`
+Reference SQL:
+
+- MySQL: `collector/src/db/sql/mysql.sql`
+- PostgreSQL: `collector/src/db/sql/postgres.sql`
 
 ## Data notes
 

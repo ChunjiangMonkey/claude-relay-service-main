@@ -173,6 +173,8 @@ certs/
 *.db
 *.sqlite
 *.sqlite3
+!extensions/anthropic-capture/collector/src/db/sql/mysql.sql
+!extensions/anthropic-capture/collector/src/db/sql/postgres.sql
 
 # Redis dumps
 dump.rdb

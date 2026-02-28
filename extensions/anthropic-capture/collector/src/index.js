@@ -4,7 +4,7 @@ const fs = require('fs')
 const fsPromises = require('fs/promises')
 const path = require('path')
 const crypto = require('crypto')
-const { Pool } = require('pg')
+const { createDbAdapter, normalizeBackend } = require('./db')
 
 const DEFAULT_CAPTURE_DIR = '/data/relay-capture'
 const DEFAULT_FILES = [
@@ -14,29 +14,31 @@ const DEFAULT_FILES = [
 ]
 
 const config = {
+  dbBackend: normalizeBackend(process.env.COLLECTOR_DB_BACKEND || 'mysql'),
   databaseUrl: process.env.DATABASE_URL || '',
+  mysql: {
+    host: process.env.MYSQL_HOST || '',
+    port: parsePositiveInt(process.env.MYSQL_PORT, 3306),
+    user: process.env.MYSQL_USER || '',
+    password: process.env.MYSQL_PASSWORD || '',
+    database: process.env.MYSQL_DATABASE || '',
+    ssl: isEnabled(process.env.MYSQL_SSL, false)
+  },
   captureDir: process.env.ANTHROPIC_CAPTURE_DIR || DEFAULT_CAPTURE_DIR,
   files: parseFileList(process.env.COLLECTOR_FILES),
   pollIntervalMs: parsePositiveInt(process.env.COLLECTOR_POLL_INTERVAL_MS, 2000),
-  debug: isEnabled(process.env.COLLECTOR_DEBUG, false)
+  debug: isEnabled(process.env.COLLECTOR_DEBUG, false),
+  dbPoolMax: parsePositiveInt(process.env.COLLECTOR_DB_POOL_MAX, 10)
 }
 
-if (!config.databaseUrl) {
-  // eslint-disable-next-line no-console
-  console.error('[collector] DATABASE_URL is required')
-  process.exit(1)
-}
+validateConfig(config)
 
-const pool = new Pool({
-  connectionString: config.databaseUrl,
-  max: parsePositiveInt(process.env.COLLECTOR_DB_POOL_MAX, 10)
-})
-
+const db = createDbAdapter(config)
 const states = new Map()
 let polling = false
 
 async function bootstrap() {
-  await ensureSchema()
+  await db.ensureSchema()
   await loadStates()
 
   await pollOnce()
@@ -47,78 +49,19 @@ async function bootstrap() {
   }, config.pollIntervalMs)
 
   logInfo('collector_started', {
+    dbBackend: config.dbBackend,
     captureDir: config.captureDir,
     pollIntervalMs: config.pollIntervalMs,
     files: config.files
   })
 }
 
-async function ensureSchema() {
-  const sql = `
-CREATE TABLE IF NOT EXISTS upstream_events_raw (
-  id BIGSERIAL PRIMARY KEY,
-  event_hash TEXT NOT NULL UNIQUE,
-  trace_id TEXT,
-  event_type TEXT NOT NULL,
-  event_ts TIMESTAMPTZ,
-  source_file TEXT NOT NULL,
-  payload JSONB NOT NULL,
-  ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_upstream_events_raw_trace_id ON upstream_events_raw(trace_id);
-CREATE INDEX IF NOT EXISTS idx_upstream_events_raw_event_ts ON upstream_events_raw(event_ts DESC);
-
-CREATE TABLE IF NOT EXISTS anthropic_interactions (
-  trace_id TEXT PRIMARY KEY,
-  upstream_request_id TEXT,
-  model TEXT,
-  is_stream BOOLEAN,
-  request_json JSONB,
-  response_json JSONB,
-  assistant_text_full TEXT,
-  tool_calls JSONB,
-  usage JSONB,
-  stop_reason TEXT,
-  http_status INTEGER,
-  latency_ms INTEGER,
-  status TEXT,
-  first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_anthropic_interactions_status ON anthropic_interactions(status);
-CREATE INDEX IF NOT EXISTS idx_anthropic_interactions_model ON anthropic_interactions(model);
-CREATE INDEX IF NOT EXISTS idx_anthropic_interactions_last_seen ON anthropic_interactions(last_seen_at DESC);
-
-CREATE TABLE IF NOT EXISTS collector_offsets (
-  file_path TEXT PRIMARY KEY,
-  inode TEXT,
-  offset BIGINT NOT NULL,
-  remainder TEXT,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS ingest_errors (
-  id BIGSERIAL PRIMARY KEY,
-  source_file TEXT,
-  raw_line TEXT,
-  error TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-`
-
-  await pool.query(sql)
-}
-
 async function loadStates() {
-  const result = await pool.query('SELECT file_path, inode, offset, remainder FROM collector_offsets')
-  result.rows.forEach((row) => {
+  const rows = await db.loadOffsets()
+  rows.forEach((row) => {
     states.set(row.file_path, {
       inode: row.inode || null,
-      offset: Number.parseInt(row.offset, 10) || 0,
+      offset: Number.parseInt(String(row.offset || 0), 10) || 0,
       remainder: row.remainder || ''
     })
   })
@@ -341,17 +284,16 @@ async function processLine(sourceFile, line) {
   const eventType = String(payload.type || 'unknown')
   const eventTs = normalizeTimestamp(payload.ts || payload.timestamp)
 
-  const rawInsert = await pool.query(
-    `
-    INSERT INTO upstream_events_raw (event_hash, trace_id, event_type, event_ts, source_file, payload)
-    VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-    ON CONFLICT (event_hash) DO NOTHING
-    RETURNING id
-    `,
-    [eventHash, traceId, eventType, eventTs, sourceFile, JSON.stringify(payload)]
-  )
+  const inserted = await db.insertRawEvent({
+    eventHash,
+    traceId,
+    eventType,
+    eventTs,
+    sourceFile,
+    payload
+  })
 
-  if (rawInsert.rowCount === 0) {
+  if (!inserted) {
     return
   }
 
@@ -386,30 +328,13 @@ async function upsertRequest(traceId, payload) {
   const isStream = payload.request_stream === true || (requestJson && requestJson.stream === true)
   const upstreamRequestId = payload.relay_request_id || null
 
-  await pool.query(
-    `
-    INSERT INTO anthropic_interactions (
-      trace_id,
-      upstream_request_id,
-      model,
-      is_stream,
-      request_json,
-      status,
-      first_seen_at,
-      last_seen_at,
-      created_at,
-      updated_at
-    ) VALUES ($1, $2, $3, $4, $5::jsonb, 'request_captured', NOW(), NOW(), NOW(), NOW())
-    ON CONFLICT (trace_id) DO UPDATE SET
-      upstream_request_id = COALESCE(EXCLUDED.upstream_request_id, anthropic_interactions.upstream_request_id),
-      model = COALESCE(EXCLUDED.model, anthropic_interactions.model),
-      is_stream = COALESCE(EXCLUDED.is_stream, anthropic_interactions.is_stream),
-      request_json = COALESCE(EXCLUDED.request_json, anthropic_interactions.request_json),
-      last_seen_at = NOW(),
-      updated_at = NOW()
-    `,
-    [traceId, upstreamRequestId, model, isStream, requestJson ? JSON.stringify(requestJson) : null]
-  )
+  await db.upsertRequest({
+    traceId,
+    upstreamRequestId,
+    model,
+    isStream,
+    requestJson
+  })
 }
 
 async function upsertNonStreamResponse(traceId, payload) {
@@ -426,71 +351,24 @@ async function upsertNonStreamResponse(traceId, payload) {
   const upstreamRequestId = (payload.request && payload.request.relay_request_id) || payload.relay_request_id || null
   const hasError = Boolean(payload.error)
 
-  await pool.query(
-    `
-    INSERT INTO anthropic_interactions (
-      trace_id,
-      upstream_request_id,
-      model,
-      is_stream,
-      response_json,
-      usage,
-      stop_reason,
-      http_status,
-      latency_ms,
-      status,
-      first_seen_at,
-      last_seen_at,
-      created_at,
-      updated_at
-    ) VALUES (
-      $1,
-      $2,
-      $3,
-      false,
-      $4::jsonb,
-      $5::jsonb,
-      $6,
-      $7,
-      $8,
-      $9,
-      NOW(),
-      NOW(),
-      NOW(),
-      NOW()
-    )
-    ON CONFLICT (trace_id) DO UPDATE SET
-      upstream_request_id = COALESCE(EXCLUDED.upstream_request_id, anthropic_interactions.upstream_request_id),
-      model = COALESCE(EXCLUDED.model, anthropic_interactions.model),
-      is_stream = FALSE,
-      response_json = COALESCE(EXCLUDED.response_json, anthropic_interactions.response_json),
-      usage = COALESCE(EXCLUDED.usage, anthropic_interactions.usage),
-      stop_reason = COALESCE(EXCLUDED.stop_reason, anthropic_interactions.stop_reason),
-      http_status = COALESCE(EXCLUDED.http_status, anthropic_interactions.http_status),
-      latency_ms = COALESCE(EXCLUDED.latency_ms, anthropic_interactions.latency_ms),
-      status = EXCLUDED.status,
-      last_seen_at = NOW(),
-      updated_at = NOW()
-    `,
-    [
-      traceId,
-      upstreamRequestId,
-      model,
-      responseJson ? JSON.stringify(responseJson) : null,
-      usage ? JSON.stringify(usage) : null,
-      stopReason,
-      httpStatus,
-      latencyMs,
-      hasError ? 'error_non_stream' : 'completed_non_stream'
-    ]
-  )
+  await db.upsertNonStreamResponse({
+    traceId,
+    upstreamRequestId,
+    model,
+    responseJson,
+    usage,
+    stopReason,
+    httpStatus,
+    latencyMs,
+    status: hasError ? 'error_non_stream' : 'completed_non_stream'
+  })
 }
 
 async function upsertStreamFinal(traceId, payload) {
   const stream = payload.stream || {}
   const usage = stream.usage || null
   const toolCalls = Array.isArray(stream.tool_calls) ? stream.tool_calls : []
-  const assistantText = typeof stream.assistant_text_full === 'string' ? stream.assistant_text_full : ''
+  const assistantTextFull = typeof stream.assistant_text_full === 'string' ? stream.assistant_text_full : ''
   const stopReason = stream.stop_reason || null
   const model = stream.message_model || (payload.request && payload.request.model) || null
   const httpStatus = extractInt(payload.upstream && payload.upstream.statusCode)
@@ -498,68 +376,18 @@ async function upsertStreamFinal(traceId, payload) {
   const upstreamRequestId = (payload.request && payload.request.relay_request_id) || payload.relay_request_id || null
   const hasError = Boolean(payload.error)
 
-  await pool.query(
-    `
-    INSERT INTO anthropic_interactions (
-      trace_id,
-      upstream_request_id,
-      model,
-      is_stream,
-      assistant_text_full,
-      tool_calls,
-      usage,
-      stop_reason,
-      http_status,
-      latency_ms,
-      status,
-      first_seen_at,
-      last_seen_at,
-      created_at,
-      updated_at
-    ) VALUES (
-      $1,
-      $2,
-      $3,
-      true,
-      $4,
-      $5::jsonb,
-      $6::jsonb,
-      $7,
-      $8,
-      $9,
-      $10,
-      NOW(),
-      NOW(),
-      NOW(),
-      NOW()
-    )
-    ON CONFLICT (trace_id) DO UPDATE SET
-      upstream_request_id = COALESCE(EXCLUDED.upstream_request_id, anthropic_interactions.upstream_request_id),
-      model = COALESCE(EXCLUDED.model, anthropic_interactions.model),
-      is_stream = TRUE,
-      assistant_text_full = COALESCE(EXCLUDED.assistant_text_full, anthropic_interactions.assistant_text_full),
-      tool_calls = COALESCE(EXCLUDED.tool_calls, anthropic_interactions.tool_calls),
-      usage = COALESCE(EXCLUDED.usage, anthropic_interactions.usage),
-      stop_reason = COALESCE(EXCLUDED.stop_reason, anthropic_interactions.stop_reason),
-      http_status = COALESCE(EXCLUDED.http_status, anthropic_interactions.http_status),
-      latency_ms = COALESCE(EXCLUDED.latency_ms, anthropic_interactions.latency_ms),
-      status = EXCLUDED.status,
-      last_seen_at = NOW(),
-      updated_at = NOW()
-    `,
-    [
-      traceId,
-      upstreamRequestId,
-      model,
-      assistantText,
-      JSON.stringify(toolCalls),
-      usage ? JSON.stringify(usage) : null,
-      stopReason,
-      httpStatus,
-      latencyMs,
-      hasError ? 'error_stream' : 'completed_stream'
-    ]
-  )
+  await db.upsertStreamFinal({
+    traceId,
+    upstreamRequestId,
+    model,
+    assistantTextFull,
+    toolCalls,
+    usage,
+    stopReason,
+    httpStatus,
+    latencyMs,
+    status: hasError ? 'error_stream' : 'completed_stream'
+  })
 }
 
 async function upsertStreamSummary(traceId, payload) {
@@ -568,31 +396,13 @@ async function upsertStreamSummary(traceId, payload) {
   const latencyMs = extractInt(payload.latency_ms)
   const status = payload.error ? 'error_stream_summary' : 'stream_summary'
 
-  await pool.query(
-    `
-    INSERT INTO anthropic_interactions (
-      trace_id,
-      is_stream,
-      usage,
-      stop_reason,
-      latency_ms,
-      status,
-      first_seen_at,
-      last_seen_at,
-      created_at,
-      updated_at
-    ) VALUES ($1, true, $2::jsonb, $3, $4, $5, NOW(), NOW(), NOW(), NOW())
-    ON CONFLICT (trace_id) DO UPDATE SET
-      is_stream = TRUE,
-      usage = COALESCE(EXCLUDED.usage, anthropic_interactions.usage),
-      stop_reason = COALESCE(EXCLUDED.stop_reason, anthropic_interactions.stop_reason),
-      latency_ms = COALESCE(EXCLUDED.latency_ms, anthropic_interactions.latency_ms),
-      status = COALESCE(anthropic_interactions.status, EXCLUDED.status),
-      last_seen_at = NOW(),
-      updated_at = NOW()
-    `,
-    [traceId, usage ? JSON.stringify(usage) : null, stopReason, latencyMs, status]
-  )
+  await db.upsertStreamSummary({
+    traceId,
+    usage,
+    stopReason,
+    latencyMs,
+    status
+  })
 }
 
 async function upsertTransportError(traceId, payload) {
@@ -602,58 +412,51 @@ async function upsertTransportError(traceId, payload) {
   const httpStatus = extractInt(payload.http_status)
   const upstreamRequestId = (payload.request && payload.request.relay_request_id) || payload.relay_request_id || null
 
-  await pool.query(
-    `
-    INSERT INTO anthropic_interactions (
-      trace_id,
-      upstream_request_id,
-      model,
-      is_stream,
-      http_status,
-      latency_ms,
-      status,
-      first_seen_at,
-      last_seen_at,
-      created_at,
-      updated_at
-    ) VALUES ($1, $2, $3, $4, $5, $6, 'transport_error', NOW(), NOW(), NOW(), NOW())
-    ON CONFLICT (trace_id) DO UPDATE SET
-      upstream_request_id = COALESCE(EXCLUDED.upstream_request_id, anthropic_interactions.upstream_request_id),
-      model = COALESCE(EXCLUDED.model, anthropic_interactions.model),
-      is_stream = COALESCE(EXCLUDED.is_stream, anthropic_interactions.is_stream),
-      http_status = COALESCE(EXCLUDED.http_status, anthropic_interactions.http_status),
-      latency_ms = COALESCE(EXCLUDED.latency_ms, anthropic_interactions.latency_ms),
-      status = 'transport_error',
-      last_seen_at = NOW(),
-      updated_at = NOW()
-    `,
-    [traceId, upstreamRequestId, model, isStream, httpStatus, latencyMs]
-  )
+  await db.upsertTransportError({
+    traceId,
+    upstreamRequestId,
+    model,
+    isStream,
+    httpStatus,
+    latencyMs
+  })
 }
 
 async function persistState(filePath, inode, offset, remainder) {
-  await pool.query(
-    `
-    INSERT INTO collector_offsets (file_path, inode, offset, remainder, updated_at)
-    VALUES ($1, $2, $3, $4, NOW())
-    ON CONFLICT (file_path) DO UPDATE SET
-      inode = EXCLUDED.inode,
-      offset = EXCLUDED.offset,
-      remainder = EXCLUDED.remainder,
-      updated_at = NOW()
-    `,
-    [filePath, inode, offset, remainder]
-  )
+  await db.persistOffset({ filePath, inode, offset, remainder })
 }
 
 async function storeIngestError(sourceFile, rawLine, error) {
-  await pool.query(
-    `
-    INSERT INTO ingest_errors (source_file, raw_line, error)
-    VALUES ($1, $2, $3)
-    `,
-    [sourceFile, rawLine, error]
-  )
+  await db.insertIngestError({ sourceFile, rawLine, error })
+}
+
+function validateConfig(runtimeConfig) {
+  if (runtimeConfig.dbBackend === 'postgres') {
+    if (!runtimeConfig.databaseUrl) {
+      // eslint-disable-next-line no-console
+      console.error('[collector] DATABASE_URL is required when COLLECTOR_DB_BACKEND=postgres')
+      process.exit(1)
+    }
+    return
+  }
+
+  if (runtimeConfig.dbBackend === 'mysql') {
+    const missing = []
+    if (!runtimeConfig.mysql.host) missing.push('MYSQL_HOST')
+    if (!runtimeConfig.mysql.user) missing.push('MYSQL_USER')
+    if (!runtimeConfig.mysql.database) missing.push('MYSQL_DATABASE')
+
+    if (missing.length > 0) {
+      // eslint-disable-next-line no-console
+      console.error(`[collector] Missing required MySQL env: ${missing.join(', ')}`)
+      process.exit(1)
+    }
+    return
+  }
+
+  // eslint-disable-next-line no-console
+  console.error(`[collector] Unsupported COLLECTOR_DB_BACKEND: ${runtimeConfig.dbBackend}`)
+  process.exit(1)
 }
 
 function getTraceId(payload, fallback) {
@@ -726,17 +529,17 @@ function logError(message, payload) {
 }
 
 process.on('SIGINT', async () => {
-  await pool.end()
+  await db.close()
   process.exit(0)
 })
 
 process.on('SIGTERM', async () => {
-  await pool.end()
+  await db.close()
   process.exit(0)
 })
 
 bootstrap().catch(async (error) => {
   logError('bootstrap_failed', { message: error.message, stack: error.stack })
-  await pool.end().catch(() => {})
+  await db.close().catch(() => {})
   process.exit(1)
 })
