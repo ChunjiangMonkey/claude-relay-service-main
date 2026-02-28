@@ -445,6 +445,45 @@ function applySsePayload(state, payload, eventName, includeThinking) {
   }
 }
 
+function applySseText(state, text, includeThinking) {
+  if (!text || typeof text !== 'string') {
+    return
+  }
+
+  let currentEventName = ''
+  const lines = text.split('\n')
+
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\r$/, '')
+    if (!line) {
+      currentEventName = ''
+      continue
+    }
+
+    if (line.startsWith('event:')) {
+      currentEventName = line.slice(6).trim()
+      continue
+    }
+
+    if (!line.startsWith('data:')) {
+      continue
+    }
+
+    const payloadRaw = line.slice(5).trimStart()
+    if (!payloadRaw || payloadRaw === '[DONE]') {
+      continue
+    }
+
+    const parsed = parseMaybeJson(payloadRaw)
+    if (!parsed) {
+      state.parseErrors.push('invalid_json_data_line')
+      continue
+    }
+
+    applySsePayload(state, parsed, currentEventName, includeThinking)
+  }
+}
+
 function buildStreamRecord(traceId, requestRecord, requestMeta, responseMeta, streamState, timing, error) {
   for (const block of streamState.blocks.values()) {
     flushToolBlock(block, streamState)
@@ -712,47 +751,12 @@ function patchHttpsRequest() {
       const contentType = String(contentTypeRaw || '').toLowerCase()
       const isStreamResponse = contentType.includes('text/event-stream')
 
-      let sseBuffer = ''
-      let currentEventName = ''
       const streamState = createStreamState(config.includeThinking)
       const responseChunks = []
 
       res.on('data', (chunk) => {
         if (isStreamResponse) {
-          const chunkText = bufferToUtf8(chunk)
-          sseBuffer += chunkText
-          const lines = sseBuffer.split('\n')
-          sseBuffer = lines.pop() || ''
-
-          for (const rawLine of lines) {
-            const line = rawLine.replace(/\r$/, '')
-            if (!line) {
-              currentEventName = ''
-              continue
-            }
-
-            if (line.startsWith('event:')) {
-              currentEventName = line.slice(6).trim()
-              continue
-            }
-
-            if (!line.startsWith('data:')) {
-              continue
-            }
-
-            const payloadRaw = line.slice(5).trimStart()
-            if (!payloadRaw || payloadRaw === '[DONE]') {
-              continue
-            }
-
-            const parsed = parseMaybeJson(payloadRaw)
-            if (!parsed) {
-              streamState.parseErrors.push('invalid_json_data_line')
-              continue
-            }
-
-            applySsePayload(streamState, parsed, currentEventName, config.includeThinking)
-          }
+          responseChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8'))
           return
         }
 
@@ -774,20 +778,13 @@ function patchHttpsRequest() {
         }
 
         if (isStreamResponse) {
-          if (sseBuffer.trim()) {
-            const tailLines = sseBuffer.split('\n')
-            for (const rawLine of tailLines) {
-              const line = rawLine.replace(/\r$/, '')
-              if (!line.startsWith('data:')) {
-                continue
-              }
-              const payloadRaw = line.slice(5).trimStart()
-              const parsed = parseMaybeJson(payloadRaw)
-              if (parsed) {
-                applySsePayload(streamState, parsed, currentEventName, config.includeThinking)
-              }
-            }
+          const streamBodyBuffer = Buffer.concat(responseChunks)
+          const decodeMeta = decodeCompressedBody(streamBodyBuffer, responseHeaders)
+          if (decodeMeta.decodeError) {
+            streamState.parseErrors.push(decodeMeta.decodeError)
           }
+          const streamText = decodeMeta.buffer.toString('utf8')
+          applySseText(streamState, streamText, config.includeThinking)
 
           const streamRecord = buildStreamRecord(
             traceId,
@@ -808,6 +805,10 @@ function patchHttpsRequest() {
             stop_reason: streamRecord.stream.stop_reason,
             usage: streamRecord.stream.usage,
             event_count: streamRecord.stream.event_count,
+            content_encoding: decodeMeta.contentEncoding,
+            decompressed: decodeMeta.decompressed,
+            decode_source: decodeMeta.decodeSource,
+            decode_error: decodeMeta.decodeError,
             latency_ms: latencyMs,
             error: streamRecord.error
           })
@@ -964,13 +965,6 @@ function captureChunk(chunks, chunk, encoding) {
 
   // Ignore unsupported chunk types to avoid corrupting captured request payload.
   // (e.g. String(object) would produce inaccurate body text)
-}
-
-function bufferToUtf8(value) {
-  if (Buffer.isBuffer(value)) {
-    return value.toString('utf8')
-  }
-  return typeof value === 'string' ? value : String(value)
 }
 
 function writeJsonl(filename, payload) {

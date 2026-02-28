@@ -7,7 +7,7 @@ This extension captures **Anthropic upstream** requests/responses (including str
 - Runtime hook: `hook/anthropic-hook.js`
   - Injected via `NODE_OPTIONS=--require ...`
   - Captures only configured upstream hosts/methods/paths (default `api.anthropic.com`, `POST`, `/v1/messages`)
-  - Auto-decompresses non-stream upstream payload (`gzip`/`br`/`deflate`, with gzip magic fallback)
+  - Auto-decompresses upstream payload (`gzip`/`br`/`deflate`, with gzip magic fallback)
   - Writes JSONL files:
     - `anthropic-upstream-requests.jsonl`
     - `anthropic-upstream-responses.jsonl`
