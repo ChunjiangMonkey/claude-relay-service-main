@@ -110,8 +110,26 @@ function createMysqlAdapter(config) {
         model = COALESCE(VALUES(model), model),
         is_stream = COALESCE(VALUES(is_stream), is_stream),
         request_json = COALESCE(VALUES(request_json), request_json),
-        last_seen_at = CURRENT_TIMESTAMP(3),
-        updated_at = CURRENT_TIMESTAMP(3)
+        last_seen_at = IF(
+          (
+            COALESCE(VALUES(upstream_request_id), upstream_request_id) <=> upstream_request_id
+            AND COALESCE(VALUES(model), model) <=> model
+            AND COALESCE(VALUES(is_stream), is_stream) <=> is_stream
+            AND COALESCE(VALUES(request_json), request_json) <=> request_json
+          ),
+          last_seen_at,
+          CURRENT_TIMESTAMP(3)
+        ),
+        updated_at = IF(
+          (
+            COALESCE(VALUES(upstream_request_id), upstream_request_id) <=> upstream_request_id
+            AND COALESCE(VALUES(model), model) <=> model
+            AND COALESCE(VALUES(is_stream), is_stream) <=> is_stream
+            AND COALESCE(VALUES(request_json), request_json) <=> request_json
+          ),
+          updated_at,
+          CURRENT_TIMESTAMP(3)
+        )
       `,
       [record.traceId, record.upstreamRequestId, record.model, record.isStream, toJsonString(record.requestJson)]
     )
