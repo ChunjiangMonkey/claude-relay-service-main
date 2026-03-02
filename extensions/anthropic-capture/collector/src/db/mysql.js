@@ -39,12 +39,31 @@ function createMysqlAdapter(config) {
     const sqlPath = path.join(__dirname, 'sql', 'mysql.sql')
     const schemaSql = fs.readFileSync(sqlPath, 'utf8')
     await pool.query(schemaSql)
-    await pool.query(
-      'ALTER TABLE anthropic_interactions ADD COLUMN IF NOT EXISTS thought_text_full LONGTEXT NULL'
+
+    // Some MySQL variants (e.g. txsql) do not support `ADD COLUMN IF NOT EXISTS`.
+    // Do explicit column existence checks for cross-variant compatibility.
+    await ensureColumnExists('anthropic_interactions', 'thought_text_full', 'LONGTEXT NULL')
+    await ensureColumnExists('anthropic_interactions', 'response_message_id', 'VARCHAR(255) NULL')
+  }
+
+  async function ensureColumnExists(tableName, columnName, columnDefinitionSql) {
+    const [rows] = await pool.execute(
+      `
+      SELECT COUNT(*) AS cnt
+      FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = ?
+        AND COLUMN_NAME = ?
+      `,
+      [tableName, columnName]
     )
-    await pool.query(
-      'ALTER TABLE anthropic_interactions ADD COLUMN IF NOT EXISTS response_message_id VARCHAR(255) NULL'
-    )
+
+    const exists = Number(rows && rows[0] && rows[0].cnt) > 0
+    if (exists) {
+      return
+    }
+
+    await pool.query(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinitionSql}`)
   }
 
   async function loadOffsets() {
