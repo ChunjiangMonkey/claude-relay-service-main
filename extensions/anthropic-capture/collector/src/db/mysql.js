@@ -179,8 +179,36 @@ function createMysqlAdapter(config) {
         http_status = COALESCE(VALUES(http_status), http_status),
         latency_ms = COALESCE(VALUES(latency_ms), latency_ms),
         status = VALUES(status),
-        last_seen_at = CURRENT_TIMESTAMP(3),
-        updated_at = CURRENT_TIMESTAMP(3)
+        last_seen_at = IF(
+          (
+            COALESCE(VALUES(upstream_request_id), upstream_request_id) <=> upstream_request_id
+            AND COALESCE(VALUES(model), model) <=> model
+            AND FALSE <=> is_stream
+            AND COALESCE(VALUES(response_json), response_json) <=> response_json
+            AND COALESCE(VALUES(usage_json), usage_json) <=> usage_json
+            AND COALESCE(VALUES(stop_reason), stop_reason) <=> stop_reason
+            AND COALESCE(VALUES(http_status), http_status) <=> http_status
+            AND COALESCE(VALUES(latency_ms), latency_ms) <=> latency_ms
+            AND VALUES(status) <=> status
+          ),
+          last_seen_at,
+          CURRENT_TIMESTAMP(3)
+        ),
+        updated_at = IF(
+          (
+            COALESCE(VALUES(upstream_request_id), upstream_request_id) <=> upstream_request_id
+            AND COALESCE(VALUES(model), model) <=> model
+            AND FALSE <=> is_stream
+            AND COALESCE(VALUES(response_json), response_json) <=> response_json
+            AND COALESCE(VALUES(usage_json), usage_json) <=> usage_json
+            AND COALESCE(VALUES(stop_reason), stop_reason) <=> stop_reason
+            AND COALESCE(VALUES(http_status), http_status) <=> http_status
+            AND COALESCE(VALUES(latency_ms), latency_ms) <=> latency_ms
+            AND VALUES(status) <=> status
+          ),
+          updated_at,
+          CURRENT_TIMESTAMP(3)
+        )
       `,
       [
         record.traceId,
@@ -249,8 +277,42 @@ function createMysqlAdapter(config) {
         http_status = COALESCE(VALUES(http_status), http_status),
         latency_ms = COALESCE(VALUES(latency_ms), latency_ms),
         status = VALUES(status),
-        last_seen_at = CURRENT_TIMESTAMP(3),
-        updated_at = CURRENT_TIMESTAMP(3)
+        last_seen_at = IF(
+          (
+            COALESCE(VALUES(upstream_request_id), upstream_request_id) <=> upstream_request_id
+            AND COALESCE(VALUES(model), model) <=> model
+            AND TRUE <=> is_stream
+            AND COALESCE(VALUES(assistant_text_full), assistant_text_full) <=> assistant_text_full
+            AND COALESCE(VALUES(thought_text_full), thought_text_full) <=> thought_text_full
+            AND COALESCE(VALUES(response_message_id), response_message_id) <=> response_message_id
+            AND COALESCE(VALUES(tool_calls), tool_calls) <=> tool_calls
+            AND COALESCE(VALUES(usage_json), usage_json) <=> usage_json
+            AND COALESCE(VALUES(stop_reason), stop_reason) <=> stop_reason
+            AND COALESCE(VALUES(http_status), http_status) <=> http_status
+            AND COALESCE(VALUES(latency_ms), latency_ms) <=> latency_ms
+            AND VALUES(status) <=> status
+          ),
+          last_seen_at,
+          CURRENT_TIMESTAMP(3)
+        ),
+        updated_at = IF(
+          (
+            COALESCE(VALUES(upstream_request_id), upstream_request_id) <=> upstream_request_id
+            AND COALESCE(VALUES(model), model) <=> model
+            AND TRUE <=> is_stream
+            AND COALESCE(VALUES(assistant_text_full), assistant_text_full) <=> assistant_text_full
+            AND COALESCE(VALUES(thought_text_full), thought_text_full) <=> thought_text_full
+            AND COALESCE(VALUES(response_message_id), response_message_id) <=> response_message_id
+            AND COALESCE(VALUES(tool_calls), tool_calls) <=> tool_calls
+            AND COALESCE(VALUES(usage_json), usage_json) <=> usage_json
+            AND COALESCE(VALUES(stop_reason), stop_reason) <=> stop_reason
+            AND COALESCE(VALUES(http_status), http_status) <=> http_status
+            AND COALESCE(VALUES(latency_ms), latency_ms) <=> latency_ms
+            AND VALUES(status) <=> status
+          ),
+          updated_at,
+          CURRENT_TIMESTAMP(3)
+        )
       `,
       [
         record.traceId,
@@ -290,8 +352,28 @@ function createMysqlAdapter(config) {
         stop_reason = COALESCE(VALUES(stop_reason), stop_reason),
         latency_ms = COALESCE(VALUES(latency_ms), latency_ms),
         status = COALESCE(status, VALUES(status)),
-        last_seen_at = CURRENT_TIMESTAMP(3),
-        updated_at = CURRENT_TIMESTAMP(3)
+        last_seen_at = IF(
+          (
+            TRUE <=> is_stream
+            AND COALESCE(VALUES(usage_json), usage_json) <=> usage_json
+            AND COALESCE(VALUES(stop_reason), stop_reason) <=> stop_reason
+            AND COALESCE(VALUES(latency_ms), latency_ms) <=> latency_ms
+            AND COALESCE(status, VALUES(status)) <=> status
+          ),
+          last_seen_at,
+          CURRENT_TIMESTAMP(3)
+        ),
+        updated_at = IF(
+          (
+            TRUE <=> is_stream
+            AND COALESCE(VALUES(usage_json), usage_json) <=> usage_json
+            AND COALESCE(VALUES(stop_reason), stop_reason) <=> stop_reason
+            AND COALESCE(VALUES(latency_ms), latency_ms) <=> latency_ms
+            AND COALESCE(status, VALUES(status)) <=> status
+          ),
+          updated_at,
+          CURRENT_TIMESTAMP(3)
+        )
       `,
       [record.traceId, toJsonString(record.usage), record.stopReason, record.latencyMs, record.status]
     )
@@ -320,8 +402,30 @@ function createMysqlAdapter(config) {
         http_status = COALESCE(VALUES(http_status), http_status),
         latency_ms = COALESCE(VALUES(latency_ms), latency_ms),
         status = 'transport_error',
-        last_seen_at = CURRENT_TIMESTAMP(3),
-        updated_at = CURRENT_TIMESTAMP(3)
+        last_seen_at = IF(
+          (
+            COALESCE(VALUES(upstream_request_id), upstream_request_id) <=> upstream_request_id
+            AND COALESCE(VALUES(model), model) <=> model
+            AND COALESCE(VALUES(is_stream), is_stream) <=> is_stream
+            AND COALESCE(VALUES(http_status), http_status) <=> http_status
+            AND COALESCE(VALUES(latency_ms), latency_ms) <=> latency_ms
+            AND 'transport_error' <=> status
+          ),
+          last_seen_at,
+          CURRENT_TIMESTAMP(3)
+        ),
+        updated_at = IF(
+          (
+            COALESCE(VALUES(upstream_request_id), upstream_request_id) <=> upstream_request_id
+            AND COALESCE(VALUES(model), model) <=> model
+            AND COALESCE(VALUES(is_stream), is_stream) <=> is_stream
+            AND COALESCE(VALUES(http_status), http_status) <=> http_status
+            AND COALESCE(VALUES(latency_ms), latency_ms) <=> latency_ms
+            AND 'transport_error' <=> status
+          ),
+          updated_at,
+          CURRENT_TIMESTAMP(3)
+        )
       `,
       [
         record.traceId,
