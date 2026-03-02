@@ -29,6 +29,12 @@ function createPostgresAdapter(config) {
     const sqlPath = path.join(__dirname, 'sql', 'postgres.sql')
     const schemaSql = fs.readFileSync(sqlPath, 'utf8')
     await pool.query(schemaSql)
+    await pool.query(
+      'ALTER TABLE anthropic_interactions ADD COLUMN IF NOT EXISTS thought_text_full TEXT'
+    )
+    await pool.query(
+      'ALTER TABLE anthropic_interactions ADD COLUMN IF NOT EXISTS response_message_id TEXT'
+    )
   }
 
   async function loadOffsets() {
@@ -160,6 +166,8 @@ function createPostgresAdapter(config) {
         model,
         is_stream,
         assistant_text_full,
+        thought_text_full,
+        response_message_id,
         tool_calls,
         usage,
         stop_reason,
@@ -176,12 +184,14 @@ function createPostgresAdapter(config) {
         $3,
         true,
         $4,
-        $5::jsonb,
-        $6::jsonb,
-        $7,
-        $8,
+        $5,
+        $6,
+        $7::jsonb,
+        $8::jsonb,
         $9,
         $10,
+        $11,
+        $12,
         NOW(),
         NOW(),
         NOW(),
@@ -192,6 +202,8 @@ function createPostgresAdapter(config) {
         model = COALESCE(EXCLUDED.model, anthropic_interactions.model),
         is_stream = TRUE,
         assistant_text_full = COALESCE(EXCLUDED.assistant_text_full, anthropic_interactions.assistant_text_full),
+        thought_text_full = COALESCE(EXCLUDED.thought_text_full, anthropic_interactions.thought_text_full),
+        response_message_id = COALESCE(EXCLUDED.response_message_id, anthropic_interactions.response_message_id),
         tool_calls = COALESCE(EXCLUDED.tool_calls, anthropic_interactions.tool_calls),
         usage = COALESCE(EXCLUDED.usage, anthropic_interactions.usage),
         stop_reason = COALESCE(EXCLUDED.stop_reason, anthropic_interactions.stop_reason),
@@ -206,6 +218,8 @@ function createPostgresAdapter(config) {
         record.upstreamRequestId,
         record.model,
         record.assistantTextFull,
+        record.thoughtTextFull,
+        record.responseMessageId,
         toJsonString(record.toolCalls),
         toJsonString(record.usage),
         record.stopReason,

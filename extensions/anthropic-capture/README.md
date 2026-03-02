@@ -41,6 +41,8 @@ ANTHROPIC_CAPTURE_INCLUDE_THINKING=false
 ANTHROPIC_CAPTURE_DEBUG=false
 
 # Collector + MySQL
+COLLECTOR_ENABLED=true
+COLLECTOR_STORE_RAW_EVENTS=false
 COLLECTOR_DB_BACKEND=mysql
 MYSQL_HOST=your-mysql-host
 MYSQL_PORT=3306
@@ -56,11 +58,24 @@ COLLECTOR_DEBUG=false
 Notes:
 - Do **not** set `NODE_OPTIONS` as a global Zeabur env var, because it may affect build-time `npm ci`.
 - `COLLECTOR_FILES` is optional. If omitted, collector reads all three capture files by default.
+- `COLLECTOR_STORE_RAW_EVENTS=false` disables writing large raw payloads into `upstream_events_raw` (recommended for training-data-only setups).
+- Set `COLLECTOR_STORE_RAW_EVENTS=true` temporarily when you need full raw-event audit/debug.
+- Use `COLLECTOR_ENABLED=false` to pause DB ingestion temporarily while keeping relay service running.
 
 ### Step C: set Start Command (Zeabur)
 
 ```bash
-sh -lc 'set -e; export NODE_OPTIONS="--require /app/extensions/anthropic-capture/hook/anthropic-hook.js"; sh /app/extensions/anthropic-capture/scripts/setup-capture-links.sh || true; cd /app/extensions/anthropic-capture/collector; test -d node_modules || npm install --omit=dev --no-audit --no-fund; while true; do node src/index.js; echo "[collector] exited, restart in 2s"; sleep 2; done & cd /app; exec /usr/local/bin/docker-entrypoint.sh node /app/src/app.js'
+sh -lc 'set -e; export NODE_OPTIONS="--require /app/extensions/anthropic-capture/hook/anthropic-hook.js"; sh /app/extensions/anthropic-capture/scripts/setup-capture-links.sh || true; if [ "${COLLECTOR_ENABLED:-true}" = "true" ]; then cd /app/extensions/anthropic-capture/collector; test -d node_modules || npm install --omit=dev --no-audit --no-fund; while true; do node src/index.js; echo "[collector] exited, restart in 2s"; sleep 2; done & fi; cd /app; exec /usr/local/bin/docker-entrypoint.sh node /app/src/app.js'
+```
+
+Temporary control:
+
+```bash
+# Pause DB writes (collector off, relay still on)
+COLLECTOR_ENABLED=false
+
+# Resume DB writes
+COLLECTOR_ENABLED=true
 ```
 
 ### Step D: verify logs
@@ -158,5 +173,5 @@ Reference SQL:
 ## Data notes
 
 - Non-stream responses are stored in `response_json`.
-- Stream responses are reconstructed into `assistant_text_full`, with `tool_calls`, `usage`, and `stop_reason`.
+- Stream responses are reconstructed into `assistant_text_full`, `thought_text_full`, and `response_message_id`, with `tool_calls`, `usage`, and `stop_reason`.
 - Sensitive headers (authorization/cookie/api keys) are masked before writing JSONL.

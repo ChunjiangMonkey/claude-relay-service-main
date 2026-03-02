@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS anthropic_interactions (
   request_json JSONB,
   response_json JSONB,
   assistant_text_full TEXT,
+  thought_text_full TEXT,
+  response_message_id TEXT,
   tool_calls JSONB,
   usage JSONB,
   stop_reason TEXT,

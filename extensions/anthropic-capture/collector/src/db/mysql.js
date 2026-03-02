@@ -39,6 +39,12 @@ function createMysqlAdapter(config) {
     const sqlPath = path.join(__dirname, 'sql', 'mysql.sql')
     const schemaSql = fs.readFileSync(sqlPath, 'utf8')
     await pool.query(schemaSql)
+    await pool.query(
+      'ALTER TABLE anthropic_interactions ADD COLUMN IF NOT EXISTS thought_text_full LONGTEXT NULL'
+    )
+    await pool.query(
+      'ALTER TABLE anthropic_interactions ADD COLUMN IF NOT EXISTS response_message_id VARCHAR(255) NULL'
+    )
   }
 
   async function loadOffsets() {
@@ -162,6 +168,8 @@ function createMysqlAdapter(config) {
         model,
         is_stream,
         assistant_text_full,
+        thought_text_full,
+        response_message_id,
         tool_calls,
         usage_json,
         stop_reason,
@@ -184,6 +192,8 @@ function createMysqlAdapter(config) {
         ?,
         ?,
         ?,
+        ?,
+        ?,
         CURRENT_TIMESTAMP(3),
         CURRENT_TIMESTAMP(3),
         CURRENT_TIMESTAMP(3),
@@ -194,6 +204,8 @@ function createMysqlAdapter(config) {
         model = COALESCE(VALUES(model), model),
         is_stream = TRUE,
         assistant_text_full = COALESCE(VALUES(assistant_text_full), assistant_text_full),
+        thought_text_full = COALESCE(VALUES(thought_text_full), thought_text_full),
+        response_message_id = COALESCE(VALUES(response_message_id), response_message_id),
         tool_calls = COALESCE(VALUES(tool_calls), tool_calls),
         usage_json = COALESCE(VALUES(usage_json), usage_json),
         stop_reason = COALESCE(VALUES(stop_reason), stop_reason),
@@ -208,6 +220,8 @@ function createMysqlAdapter(config) {
         record.upstreamRequestId,
         record.model,
         record.assistantTextFull,
+        record.thoughtTextFull,
+        record.responseMessageId,
         toJsonString(record.toolCalls),
         toJsonString(record.usage),
         record.stopReason,

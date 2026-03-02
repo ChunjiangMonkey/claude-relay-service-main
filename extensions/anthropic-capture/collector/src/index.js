@@ -28,7 +28,8 @@ const config = {
   files: parseFileList(process.env.COLLECTOR_FILES),
   pollIntervalMs: parsePositiveInt(process.env.COLLECTOR_POLL_INTERVAL_MS, 2000),
   debug: isEnabled(process.env.COLLECTOR_DEBUG, false),
-  dbPoolMax: parsePositiveInt(process.env.COLLECTOR_DB_POOL_MAX, 10)
+  dbPoolMax: parsePositiveInt(process.env.COLLECTOR_DB_POOL_MAX, 10),
+  storeRawEvents: isEnabled(process.env.COLLECTOR_STORE_RAW_EVENTS, false)
 }
 
 validateConfig(config)
@@ -52,7 +53,8 @@ async function bootstrap() {
     dbBackend: config.dbBackend,
     captureDir: config.captureDir,
     pollIntervalMs: config.pollIntervalMs,
-    files: config.files
+    files: config.files,
+    storeRawEvents: config.storeRawEvents
   })
 }
 
@@ -284,17 +286,19 @@ async function processLine(sourceFile, line) {
   const eventType = String(payload.type || 'unknown')
   const eventTs = normalizeTimestamp(payload.ts || payload.timestamp)
 
-  const inserted = await db.insertRawEvent({
-    eventHash,
-    traceId,
-    eventType,
-    eventTs,
-    sourceFile,
-    payload
-  })
+  if (config.storeRawEvents) {
+    const inserted = await db.insertRawEvent({
+      eventHash,
+      traceId,
+      eventType,
+      eventTs,
+      sourceFile,
+      payload
+    })
 
-  if (!inserted) {
-    return
+    if (!inserted) {
+      return
+    }
   }
 
   if (eventType === 'anthropic_upstream_request') {
@@ -369,6 +373,8 @@ async function upsertStreamFinal(traceId, payload) {
   const usage = stream.usage || null
   const toolCalls = Array.isArray(stream.tool_calls) ? stream.tool_calls : []
   const assistantTextFull = typeof stream.assistant_text_full === 'string' ? stream.assistant_text_full : ''
+  const thoughtTextFull = typeof stream.thought_text_full === 'string' ? stream.thought_text_full : null
+  const responseMessageId = typeof stream.message_id === 'string' ? stream.message_id : null
   const stopReason = stream.stop_reason || null
   const model = stream.message_model || (payload.request && payload.request.model) || null
   const httpStatus = extractInt(payload.upstream && payload.upstream.statusCode)
@@ -381,6 +387,8 @@ async function upsertStreamFinal(traceId, payload) {
     upstreamRequestId,
     model,
     assistantTextFull,
+    thoughtTextFull,
+    responseMessageId,
     toolCalls,
     usage,
     stopReason,
