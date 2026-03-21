@@ -57,6 +57,8 @@ COLLECTOR_DEBUG=false
 
 Notes:
 - Do **not** set `NODE_OPTIONS` as a global Zeabur env var, because it may affect build-time `npm ci`.
+- If you also enable OpenAI capture, point `NODE_OPTIONS` to `/app/extensions/upstream-capture/bootstrap.js` so both hooks load together.
+- If both captures are enabled, keep `ANTHROPIC_CAPTURE_DIR` and `OPENAI_CAPTURE_DIR` the same.
 - `COLLECTOR_FILES` is optional. If omitted, collector reads all three capture files by default.
 - `COLLECTOR_STORE_RAW_EVENTS=false` disables writing large raw payloads into `upstream_events_raw` (recommended for training-data-only setups).
 - Set `COLLECTOR_STORE_RAW_EVENTS=true` temporarily when you need full raw-event audit/debug.
@@ -65,7 +67,7 @@ Notes:
 ### Step C: set Start Command (Zeabur)
 
 ```bash
-sh -lc 'set -e; export NODE_OPTIONS="--require /app/extensions/anthropic-capture/hook/anthropic-hook.js"; sh /app/extensions/anthropic-capture/scripts/setup-capture-links.sh || true; if [ "${COLLECTOR_ENABLED:-true}" = "true" ]; then cd /app/extensions/anthropic-capture/collector; test -d node_modules || npm install --omit=dev --no-audit --no-fund; while true; do node src/index.js; echo "[collector] exited, restart in 2s"; sleep 2; done & fi; cd /app; exec /usr/local/bin/docker-entrypoint.sh node /app/src/app.js'
+sh -lc 'set -e; export NODE_OPTIONS="--require /app/extensions/upstream-capture/bootstrap.js"; sh /app/extensions/upstream-capture/setup-capture-links.sh || true; if [ "${COLLECTOR_ENABLED:-true}" = "true" ]; then cd /app/extensions/anthropic-capture/collector; test -d node_modules || npm install --omit=dev --no-audit --no-fund; while true; do node src/index.js; echo "[collector] exited, restart in 2s"; sleep 2; done & fi; cd /app; exec /usr/local/bin/docker-entrypoint.sh node /app/src/app.js'
 ```
 
 Temporary control:
@@ -104,19 +106,19 @@ ANTHROPIC_CAPTURE_INCLUDE_THINKING=false
 Inject hook at runtime:
 
 ```bash
-NODE_OPTIONS=--require /app/extensions/anthropic-capture/hook/anthropic-hook.js
+NODE_OPTIONS=--require /app/extensions/upstream-capture/bootstrap.js
 ```
 
 Optional symlink helper (if you want files visible under `/app` as well):
 
 ```bash
-sh /app/extensions/anthropic-capture/scripts/setup-capture-links.sh
+sh /app/extensions/upstream-capture/setup-capture-links.sh
 ```
 
 Example startup command in Zeabur:
 
 ```bash
-sh -lc 'export NODE_OPTIONS="--require /app/extensions/anthropic-capture/hook/anthropic-hook.js"; sh /app/extensions/anthropic-capture/scripts/setup-capture-links.sh; exec node src/app.js'
+sh -lc 'export NODE_OPTIONS="--require /app/extensions/upstream-capture/bootstrap.js"; sh /app/extensions/upstream-capture/setup-capture-links.sh; exec node src/app.js'
 ```
 
 ## 3) Collector service setup
