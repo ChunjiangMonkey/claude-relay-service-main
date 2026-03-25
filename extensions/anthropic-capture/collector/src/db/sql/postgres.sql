@@ -46,6 +46,36 @@ CREATE TABLE IF NOT EXISTS collector_offsets (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS openai_interactions (
+  trace_id TEXT PRIMARY KEY,
+  provider_kind TEXT,
+  model TEXT,
+  is_stream BOOLEAN,
+  request_json JSONB,
+  response_id TEXT,
+  assistant_text_full TEXT,
+  reasoning_text_full TEXT,
+  tool_calls JSONB,
+  usage_json JSONB,
+  input_tokens INTEGER,
+  output_tokens INTEGER,
+  total_tokens INTEGER,
+  cached_tokens INTEGER,
+  reasoning_tokens INTEGER,
+  status TEXT,
+  http_status INTEGER,
+  latency_ms INTEGER,
+  first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_openai_status ON openai_interactions(status);
+CREATE INDEX IF NOT EXISTS idx_openai_model ON openai_interactions(model);
+CREATE INDEX IF NOT EXISTS idx_openai_provider ON openai_interactions(provider_kind);
+CREATE INDEX IF NOT EXISTS idx_openai_last_seen ON openai_interactions(last_seen_at DESC);
+
 CREATE TABLE IF NOT EXISTS ingest_errors (
   id BIGSERIAL PRIMARY KEY,
   source_file TEXT,

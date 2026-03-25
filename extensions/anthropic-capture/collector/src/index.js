@@ -5,12 +5,15 @@ const fsPromises = require('fs/promises')
 const path = require('path')
 const crypto = require('crypto')
 const { createDbAdapter, normalizeBackend } = require('./db')
+const { parseOpenaiSse, extractOutputContent } = require('./sseParser')
 
 const DEFAULT_CAPTURE_DIR = '/data/relay-capture'
 const DEFAULT_FILES = [
   'anthropic-upstream-requests.jsonl',
   'anthropic-upstream-responses.jsonl',
-  'anthropic-upstream-stream-final.jsonl'
+  'anthropic-upstream-stream-final.jsonl',
+  'openai-upstream-requests.jsonl',
+  'openai-upstream-responses.jsonl'
 ]
 
 const config = {
@@ -323,6 +326,16 @@ async function processLine(sourceFile, line) {
 
   if (eventType === 'anthropic_upstream_response_transport_error') {
     await upsertTransportError(traceId, payload)
+    return
+  }
+
+  if (eventType === 'openai_upstream_request') {
+    await upsertOpenaiRequest(traceId, payload)
+    return
+  }
+
+  if (eventType === 'openai_upstream_response_non_stream') {
+    await upsertOpenaiNonStreamResponse(traceId, payload)
   }
 }
 
@@ -342,9 +355,11 @@ async function upsertRequest(traceId, payload) {
 }
 
 async function upsertNonStreamResponse(traceId, payload) {
-  const responseJson = payload.response && payload.response.body_json ? payload.response.body_json : null
+  const responseJson =
+    payload.response && payload.response.body_json ? payload.response.body_json : null
   const usage = payload.response && payload.response.usage ? payload.response.usage : null
-  const stopReason = payload.response && payload.response.stop_reason ? payload.response.stop_reason : null
+  const stopReason =
+    payload.response && payload.response.stop_reason ? payload.response.stop_reason : null
   const model =
     (payload.response && payload.response.model) ||
     (responseJson && responseJson.model) ||
@@ -352,7 +367,8 @@ async function upsertNonStreamResponse(traceId, payload) {
     null
   const httpStatus = extractInt(payload.upstream && payload.upstream.statusCode)
   const latencyMs = extractInt(payload.timing && payload.timing.latency_ms)
-  const upstreamRequestId = (payload.request && payload.request.relay_request_id) || payload.relay_request_id || null
+  const upstreamRequestId =
+    (payload.request && payload.request.relay_request_id) || payload.relay_request_id || null
   const hasError = Boolean(payload.error)
 
   await db.upsertNonStreamResponse({
@@ -372,14 +388,17 @@ async function upsertStreamFinal(traceId, payload) {
   const stream = payload.stream || {}
   const usage = stream.usage || null
   const toolCalls = Array.isArray(stream.tool_calls) ? stream.tool_calls : []
-  const assistantTextFull = typeof stream.assistant_text_full === 'string' ? stream.assistant_text_full : ''
-  const thoughtTextFull = typeof stream.thought_text_full === 'string' ? stream.thought_text_full : null
+  const assistantTextFull =
+    typeof stream.assistant_text_full === 'string' ? stream.assistant_text_full : ''
+  const thoughtTextFull =
+    typeof stream.thought_text_full === 'string' ? stream.thought_text_full : null
   const responseMessageId = typeof stream.message_id === 'string' ? stream.message_id : null
   const stopReason = stream.stop_reason || null
   const model = stream.message_model || (payload.request && payload.request.model) || null
   const httpStatus = extractInt(payload.upstream && payload.upstream.statusCode)
   const latencyMs = extractInt(payload.timing && payload.timing.latency_ms)
-  const upstreamRequestId = (payload.request && payload.request.relay_request_id) || payload.relay_request_id || null
+  const upstreamRequestId =
+    (payload.request && payload.request.relay_request_id) || payload.relay_request_id || null
   const hasError = Boolean(payload.error)
 
   await db.upsertStreamFinal({
@@ -418,7 +437,8 @@ async function upsertTransportError(traceId, payload) {
   const isStream = payload.request && payload.request.stream === true
   const latencyMs = extractInt(payload.timing && payload.timing.latency_ms)
   const httpStatus = extractInt(payload.http_status)
-  const upstreamRequestId = (payload.request && payload.request.relay_request_id) || payload.relay_request_id || null
+  const upstreamRequestId =
+    (payload.request && payload.request.relay_request_id) || payload.relay_request_id || null
 
   await db.upsertTransportError({
     traceId,
@@ -427,6 +447,92 @@ async function upsertTransportError(traceId, payload) {
     isStream,
     httpStatus,
     latencyMs
+  })
+}
+
+async function upsertOpenaiRequest(traceId, payload) {
+  const requestJson = payload.request_body_json || null
+  const model = payload.request_model || (requestJson && requestJson.model) || null
+  const isStream = payload.request_stream === true || (requestJson && requestJson.stream === true)
+  const providerKind = payload.provider_kind || null
+
+  await db.upsertOpenaiRequest({
+    traceId,
+    providerKind,
+    model,
+    isStream,
+    requestJson
+  })
+}
+
+async function upsertOpenaiNonStreamResponse(traceId, payload) {
+  const resp = payload.response || {}
+  const providerKind = payload.provider_kind || null
+
+  // Try SSE parsing on body_raw first (handles cases where body is SSE text)
+  const sseParsed = parseOpenaiSse(resp.body_raw)
+
+  let model = resp.model || null
+  let responseId = resp.response_id || null
+  let responseStatus = resp.status || null
+  let usage = resp.usage || null
+  let assistantTextFull = resp.assistant_text_full || ''
+  let reasoningTextFull = resp.reasoning_text_full || ''
+  let toolCalls = Array.isArray(resp.tool_calls) ? resp.tool_calls : []
+
+  if (sseParsed) {
+    model = sseParsed.model || model
+    responseId = sseParsed.responseId || responseId
+    responseStatus = sseParsed.status || responseStatus
+    usage = sseParsed.usage || usage
+
+    const outputContent = extractOutputContent(sseParsed.output)
+    assistantTextFull = outputContent.assistantTextFull || assistantTextFull
+    reasoningTextFull = outputContent.reasoningTextFull || reasoningTextFull
+    if (outputContent.toolCalls.length > 0) {
+      toolCalls = outputContent.toolCalls
+    }
+  }
+
+  const httpStatus = extractInt(payload.upstream && payload.upstream.statusCode)
+
+  if (!model && !usage && !sseParsed && httpStatus >= 200 && httpStatus < 300) {
+    logInfo('openai_ingest_warning', {
+      traceId,
+      message: 'SSE parse returned null and response fields are empty'
+    })
+  }
+  const latencyMs = extractInt(payload.timing && payload.timing.latency_ms)
+  const hasError = Boolean(payload.error)
+  const status = hasError ? 'error' : responseStatus || 'completed'
+
+  const inputTokens = extractInt(usage && usage.input_tokens)
+  const outputTokens = extractInt(usage && usage.output_tokens)
+  const totalTokens = extractInt(usage && usage.total_tokens)
+  const cachedTokens = extractInt(
+    usage && usage.input_tokens_details && usage.input_tokens_details.cached_tokens
+  )
+  const reasoningTokens = extractInt(
+    usage && usage.output_tokens_details && usage.output_tokens_details.reasoning_tokens
+  )
+
+  await db.upsertOpenaiResponse({
+    traceId,
+    providerKind,
+    model,
+    responseId,
+    assistantTextFull: assistantTextFull || null,
+    reasoningTextFull: reasoningTextFull || null,
+    toolCalls: toolCalls.length > 0 ? toolCalls : null,
+    usageJson: usage,
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    cachedTokens,
+    reasoningTokens,
+    httpStatus,
+    latencyMs,
+    status
   })
 }
 

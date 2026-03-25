@@ -45,6 +45,35 @@ CREATE TABLE IF NOT EXISTS collector_offsets (
   updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS openai_interactions (
+  trace_id VARCHAR(255) PRIMARY KEY,
+  provider_kind VARCHAR(64),
+  model VARCHAR(255),
+  is_stream BOOLEAN,
+  request_json JSON,
+  response_id VARCHAR(255),
+  assistant_text_full LONGTEXT,
+  reasoning_text_full LONGTEXT,
+  tool_calls JSON,
+  usage_json JSON,
+  input_tokens INT,
+  output_tokens INT,
+  total_tokens INT,
+  cached_tokens INT,
+  reasoning_tokens INT,
+  status VARCHAR(64),
+  http_status INT,
+  latency_ms INT,
+  first_seen_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  last_seen_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  KEY idx_openai_status (status),
+  KEY idx_openai_model (model),
+  KEY idx_openai_provider (provider_kind),
+  KEY idx_openai_last_seen (last_seen_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS ingest_errors (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   source_file TEXT,

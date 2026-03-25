@@ -20,6 +20,8 @@ function createPostgresAdapter(config) {
     upsertStreamFinal,
     upsertStreamSummary,
     upsertTransportError,
+    upsertOpenaiRequest,
+    upsertOpenaiResponse,
     persistOffset,
     insertIngestError,
     close
@@ -38,7 +40,9 @@ function createPostgresAdapter(config) {
   }
 
   async function loadOffsets() {
-    const result = await pool.query('SELECT file_path, inode, offset, remainder FROM collector_offsets')
+    const result = await pool.query(
+      'SELECT file_path, inode, offset, remainder FROM collector_offsets'
+    )
     return result.rows
   }
 
@@ -254,7 +258,13 @@ function createPostgresAdapter(config) {
         last_seen_at = NOW(),
         updated_at = NOW()
       `,
-      [record.traceId, toJsonString(record.usage), record.stopReason, record.latencyMs, record.status]
+      [
+        record.traceId,
+        toJsonString(record.usage),
+        record.stopReason,
+        record.latencyMs,
+        record.status
+      ]
     )
   }
 
@@ -291,6 +301,128 @@ function createPostgresAdapter(config) {
         record.isStream,
         record.httpStatus,
         record.latencyMs
+      ]
+    )
+  }
+
+  async function upsertOpenaiRequest(record) {
+    await pool.query(
+      `
+      INSERT INTO openai_interactions (
+        trace_id,
+        provider_kind,
+        model,
+        is_stream,
+        request_json,
+        status,
+        first_seen_at,
+        last_seen_at,
+        created_at,
+        updated_at
+      ) VALUES ($1, $2, $3, $4, $5::jsonb, 'request_captured', NOW(), NOW(), NOW(), NOW())
+      ON CONFLICT (trace_id) DO UPDATE SET
+        provider_kind = COALESCE(EXCLUDED.provider_kind, openai_interactions.provider_kind),
+        model = COALESCE(EXCLUDED.model, openai_interactions.model),
+        is_stream = COALESCE(EXCLUDED.is_stream, openai_interactions.is_stream),
+        request_json = COALESCE(EXCLUDED.request_json, openai_interactions.request_json),
+        last_seen_at = NOW(),
+        updated_at = NOW()
+      `,
+      [
+        record.traceId,
+        record.providerKind,
+        record.model,
+        record.isStream,
+        toJsonString(record.requestJson)
+      ]
+    )
+  }
+
+  async function upsertOpenaiResponse(record) {
+    await pool.query(
+      `
+      INSERT INTO openai_interactions (
+        trace_id,
+        provider_kind,
+        model,
+        is_stream,
+        response_id,
+        assistant_text_full,
+        reasoning_text_full,
+        tool_calls,
+        usage_json,
+        input_tokens,
+        output_tokens,
+        total_tokens,
+        cached_tokens,
+        reasoning_tokens,
+        http_status,
+        latency_ms,
+        status,
+        first_seen_at,
+        last_seen_at,
+        created_at,
+        updated_at
+      ) VALUES (
+        $1,
+        $2,
+        $3,
+        FALSE,
+        $4,
+        $5,
+        $6,
+        $7::jsonb,
+        $8::jsonb,
+        $9,
+        $10,
+        $11,
+        $12,
+        $13,
+        $14,
+        $15,
+        $16,
+        NOW(),
+        NOW(),
+        NOW(),
+        NOW()
+      )
+      ON CONFLICT (trace_id) DO UPDATE SET
+        provider_kind = COALESCE(EXCLUDED.provider_kind, openai_interactions.provider_kind),
+        model = COALESCE(EXCLUDED.model, openai_interactions.model),
+        is_stream = COALESCE(EXCLUDED.is_stream, openai_interactions.is_stream),
+        response_id = COALESCE(EXCLUDED.response_id, openai_interactions.response_id),
+        assistant_text_full = COALESCE(EXCLUDED.assistant_text_full, openai_interactions.assistant_text_full),
+        reasoning_text_full = COALESCE(EXCLUDED.reasoning_text_full, openai_interactions.reasoning_text_full),
+        tool_calls = COALESCE(EXCLUDED.tool_calls, openai_interactions.tool_calls),
+        usage_json = COALESCE(EXCLUDED.usage_json, openai_interactions.usage_json),
+        input_tokens = COALESCE(EXCLUDED.input_tokens, openai_interactions.input_tokens),
+        output_tokens = COALESCE(EXCLUDED.output_tokens, openai_interactions.output_tokens),
+        total_tokens = COALESCE(EXCLUDED.total_tokens, openai_interactions.total_tokens),
+        cached_tokens = COALESCE(EXCLUDED.cached_tokens, openai_interactions.cached_tokens),
+        reasoning_tokens = COALESCE(EXCLUDED.reasoning_tokens, openai_interactions.reasoning_tokens),
+        http_status = COALESCE(EXCLUDED.http_status, openai_interactions.http_status),
+        latency_ms = COALESCE(EXCLUDED.latency_ms, openai_interactions.latency_ms),
+        status = EXCLUDED.status,
+        last_seen_at = NOW(),
+        updated_at = NOW()
+      `,
+      [
+        record.traceId,
+        record.providerKind,
+        record.model,
+        record.responseId,
+        record.assistantTextFull,
+        record.reasoningTextFull,
+        toJsonString(record.toolCalls),
+        toJsonString(record.usageJson),
+        record.inputTokens,
+        record.outputTokens,
+        record.totalTokens,
+        record.cachedTokens,
+        record.reasoningTokens,
+        record.httpStatus,
+        record.latencyMs,
+        record.status
       ]
     )
   }
