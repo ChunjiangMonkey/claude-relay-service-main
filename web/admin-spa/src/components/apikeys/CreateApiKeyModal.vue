@@ -207,6 +207,68 @@
             </div>
           </div>
 
+          <!-- 自动编号 -->
+          <div
+            v-if="form.tags.length > 0"
+            class="rounded-lg border border-green-200 bg-gradient-to-r from-green-50 to-emerald-50 p-3 dark:border-green-700 dark:from-green-900/20 dark:to-emerald-900/20 sm:p-4"
+          >
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <input
+                  id="autoNumbering"
+                  v-model="autoNumbering"
+                  class="h-4 w-4 rounded border-gray-300 bg-gray-100 text-green-600 focus:ring-green-500"
+                  type="checkbox"
+                />
+                <label
+                  class="cursor-pointer text-sm font-semibold text-gray-700 dark:text-gray-300"
+                  for="autoNumbering"
+                >
+                  自动编号
+                </label>
+                <i v-if="loadingSeq" class="fas fa-spinner fa-spin text-xs text-green-500" />
+              </div>
+            </div>
+
+            <div v-if="autoNumbering" class="mt-3 space-y-2">
+              <!-- 标签选择（多标签时） -->
+              <div v-if="form.tags.length > 1" class="flex items-center gap-2">
+                <span class="text-xs font-medium text-gray-600 dark:text-gray-400"
+                  >编号基准标签:</span
+                >
+                <select
+                  v-model="autoNumberTag"
+                  class="form-input w-auto border-gray-300 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
+                  @change="fetchNextSeq(autoNumberTag)"
+                >
+                  <option v-for="tag in form.tags" :key="tag" :value="tag">
+                    {{ tag }}
+                  </option>
+                </select>
+              </div>
+
+              <!-- 编号信息提示 -->
+              <div
+                v-if="autoNumberTag"
+                class="rounded-lg bg-green-100 p-2 text-xs text-green-700 dark:bg-green-900/30 dark:text-green-300"
+              >
+                <i class="fas fa-info-circle mr-1" />
+                <span v-if="form.createType === 'single'">
+                  标签「{{ autoNumberTag }}」下已有 {{ tagKeyCount }} 个 Key，下一个编号为
+                  <strong>{{ autoNumberTag }}_{{ nextSeq }}</strong>
+                </span>
+                <span v-else>
+                  标签「{{ autoNumberTag }}」下已有 {{ tagKeyCount }} 个 Key，将创建
+                  <strong
+                    >{{ autoNumberTag }}_{{ nextSeq }} ~ {{ autoNumberTag }}_{{
+                      nextSeq + (form.batchCount || 2) - 1
+                    }}</strong
+                  >
+                </span>
+              </div>
+            </div>
+          </div>
+
           <!-- 速率限制设置 -->
           <div
             class="rounded-lg border border-blue-200 bg-blue-50 p-3 dark:border-blue-700 dark:bg-blue-900/20"
@@ -975,7 +1037,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted } from 'vue'
 import { showToast } from '@/utils/tools'
 import { useClientsStore } from '@/stores/clients'
 import { useApiKeysStore } from '@/stores/apiKeys'
@@ -1419,6 +1481,72 @@ const removeTag = (index) => {
   form.tags.splice(index, 1)
 }
 
+// 自动编号相关
+const autoNumbering = ref(false)
+const nextSeq = ref(1)
+const tagKeyCount = ref(0)
+const autoNumberTag = ref('')
+const loadingSeq = ref(false)
+
+const fetchNextSeq = async (tagName) => {
+  if (!tagName) return
+  loadingSeq.value = true
+  try {
+    const res = await httpApis.getApiKeyTagNextSeqApi(tagName)
+    nextSeq.value = res.nextSeq
+    tagKeyCount.value = res.count
+    autoNumberTag.value = tagName
+    applyAutoName()
+  } finally {
+    loadingSeq.value = false
+  }
+}
+
+const applyAutoName = () => {
+  if (!autoNumbering.value || !autoNumberTag.value) return
+  if (form.createType === 'single') {
+    form.name = `${autoNumberTag.value}_${nextSeq.value}`
+  } else {
+    form.name = autoNumberTag.value
+  }
+}
+
+watch(autoNumbering, (val) => {
+  if (val && form.tags.length > 0) {
+    if (!autoNumberTag.value) {
+      autoNumberTag.value = form.tags[0]
+    }
+    fetchNextSeq(autoNumberTag.value)
+  } else if (!val) {
+    form.name = ''
+  }
+})
+
+watch(
+  () => form.tags,
+  (tags) => {
+    if (autoNumbering.value && tags.length > 0) {
+      if (!tags.includes(autoNumberTag.value)) {
+        autoNumberTag.value = tags[0]
+      }
+      fetchNextSeq(autoNumberTag.value)
+    } else if (tags.length === 0) {
+      autoNumbering.value = false
+      autoNumberTag.value = ''
+    }
+  },
+  { deep: true }
+)
+
+watch(
+  () => form.createType,
+  () => {
+    if (autoNumbering.value) {
+      applyAutoName()
+    }
+  }
+)
+
 // 获取快捷时间选项
 const getQuickTimeOptions = () => {
   if (form.activationUnit === 'hours') {
@@ -1600,7 +1728,8 @@ const createApiKey = async () => {
         ...baseData,
         createType: 'batch',
         baseName: form.name,
-        count: form.batchCount
+        count: form.batchCount,
+        ...(autoNumbering.value ? { startIndex: nextSeq.value } : {})
       }
 
       const result = await httpApis.batchCreateApiKeysApi(data)

@@ -850,6 +850,25 @@ router.put('/api-keys/tags/:tagName', authenticateAdmin, async (req, res) => {
   }
 })
 
+// 获取标签下一个序号
+router.get('/api-keys/tags/:tagName/next-seq', authenticateAdmin, async (req, res) => {
+  try {
+    const { tagName } = req.params
+    if (!tagName) {
+      return res.status(400).json({ error: 'Tag name is required' })
+    }
+
+    const decodedTagName = decodeURIComponent(tagName)
+    const baseName = req.query.baseName || undefined
+    const result = await apiKeyService.getNextSeqForTag(decodedTagName, baseName)
+
+    return res.json(result)
+  } catch (error) {
+    logger.error('❌ Failed to get next seq for tag:', error)
+    return res.status(500).json({ error: 'Failed to get next seq', message: error.message })
+  }
+})
+
 /**
  * 获取账户绑定的 API Key 数量统计
  * GET /admin/accounts/binding-counts
@@ -1789,9 +1808,11 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
     const createdKeys = []
     const errors = []
 
+    const startIndex = Math.max(1, parseInt(req.body.startIndex, 10) || 1)
+
     for (let i = 1; i <= count; i++) {
       try {
-        const name = `${baseName}_${i}`
+        const name = `${baseName}_${startIndex + i - 1}`
         const newKey = await apiKeyService.generateApiKey({
           name,
           description,
@@ -1831,7 +1852,7 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
       } catch (error) {
         errors.push({
           index: i,
-          name: `${baseName}_${i}`,
+          name: `${baseName}_${startIndex + i - 1}`,
           error: error.message
         })
       }

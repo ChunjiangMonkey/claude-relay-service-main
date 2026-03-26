@@ -77,6 +77,12 @@ export const getApiKeyStatsApi = (id, params) =>
 export const getApiKeyModelStatsApi = (id, params) =>
   request({ url: `/admin/api-keys/${id}/model-stats`, method: 'GET', params })
 export const getApiKeyTagsApi = () => request({ url: '/admin/api-keys/tags', method: 'GET' })
+export const getApiKeyTagNextSeqApi = (tagName, baseName) =>
+  request({
+    url: `/admin/api-keys/tags/${encodeURIComponent(tagName)}/next-seq`,
+    method: 'GET',
+    params: baseName ? { baseName } : undefined
+  })
 export const getApiKeyTagsDetailsApi = () =>
   request({ url: '/admin/api-keys/tags/details', method: 'GET' })
 export const createApiKeyTagApi = (name) =>
