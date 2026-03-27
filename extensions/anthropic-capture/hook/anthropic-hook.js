@@ -35,7 +35,10 @@ const config = {
     process.env.ANTHROPIC_CAPTURE_MAX_RECORD_BYTES,
     DEFAULT_MAX_RECORD_BYTES
   ),
-  maxFileBytes: parsePositiveInt(process.env.ANTHROPIC_CAPTURE_MAX_FILE_BYTES, DEFAULT_MAX_FILE_BYTES),
+  maxFileBytes: parsePositiveInt(
+    process.env.ANTHROPIC_CAPTURE_MAX_FILE_BYTES,
+    DEFAULT_MAX_FILE_BYTES
+  ),
   backupFiles: parsePositiveInt(process.env.ANTHROPIC_CAPTURE_BACKUP_FILES, DEFAULT_BACKUP_FILES),
   includeThinking: isEnabled(process.env.ANTHROPIC_CAPTURE_INCLUDE_THINKING, false),
   debug: isEnabled(process.env.ANTHROPIC_CAPTURE_DEBUG, false)
@@ -85,7 +88,8 @@ function parseHosts(rawValue) {
 }
 
 function parseCsvList(rawValue, fallbackRaw) {
-  const source = rawValue !== undefined && rawValue !== null && rawValue !== '' ? rawValue : fallbackRaw
+  const source =
+    rawValue !== undefined && rawValue !== null && rawValue !== '' ? rawValue : fallbackRaw
   return String(source || '')
     .split(',')
     .map((item) => item.trim())
@@ -168,18 +172,12 @@ function safeJsonStringify(payload, maxBytes, eventType) {
   }
 
   const size = Buffer.byteLength(json, 'utf8')
-  if (size <= maxBytes) {
-    return json
+  if (size > maxBytes) {
+    logDebug(
+      `⚠️ Large record: ${eventType} is ${(size / 1024 / 1024).toFixed(2)}MB (limit was ${(maxBytes / 1024 / 1024).toFixed(0)}MB), keeping full record`
+    )
   }
-
-  const partial = Buffer.from(json, 'utf8').subarray(0, maxBytes).toString('utf8')
-  return JSON.stringify({
-    type: `${eventType}_truncated`,
-    truncated: true,
-    maxBytes,
-    originalBytes: size,
-    partialJson: partial
-  })
+  return json
 }
 
 function normalizeRequestMeta(firstArg, secondArg) {
@@ -257,7 +255,10 @@ function shouldCaptureRequest(meta) {
   if (!config.hosts.has(meta.hostname)) {
     return false
   }
-  if (config.captureMethods && !config.captureMethods.has(String(meta.method || '').toUpperCase())) {
+  if (
+    config.captureMethods &&
+    !config.captureMethods.has(String(meta.method || '').toUpperCase())
+  ) {
     return false
   }
   if (
@@ -270,7 +271,10 @@ function shouldCaptureRequest(meta) {
 }
 
 function createTraceId() {
-  const uuid = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex')
+  const uuid =
+    typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : crypto.randomBytes(16).toString('hex')
   return `trc_${uuid}`
 }
 
@@ -397,7 +401,10 @@ function applySsePayload(state, payload, eventName, includeThinking) {
       block.text += contentBlock.text
       if (block.type === 'text') {
         state.assistantTextFull += contentBlock.text
-      } else if (includeThinking && (block.type === 'thinking' || block.type === 'redacted_thinking')) {
+      } else if (
+        includeThinking &&
+        (block.type === 'thinking' || block.type === 'redacted_thinking')
+      ) {
         state.thoughtTextFull += contentBlock.text
       }
     }
@@ -416,7 +423,9 @@ function applySsePayload(state, payload, eventName, includeThinking) {
         state.assistantTextFull += deltaText
       } else if (
         includeThinking &&
-        (block.type === 'thinking' || block.type === 'redacted_thinking' || delta.type === 'thinking_delta')
+        (block.type === 'thinking' ||
+          block.type === 'redacted_thinking' ||
+          delta.type === 'thinking_delta')
       ) {
         state.thoughtTextFull += deltaText
       }
@@ -484,7 +493,15 @@ function applySseText(state, text, includeThinking) {
   }
 }
 
-function buildStreamRecord(traceId, requestRecord, requestMeta, responseMeta, streamState, timing, error) {
+function buildStreamRecord(
+  traceId,
+  requestRecord,
+  requestMeta,
+  responseMeta,
+  streamState,
+  timing,
+  error
+) {
   for (const block of streamState.blocks.values()) {
     flushToolBlock(block, streamState)
   }
@@ -675,7 +692,8 @@ function buildNonStreamRecord(
     response: {
       body_raw: responseBodyRaw,
       body_json: responseJson,
-      content_encoding: decodeMeta && decodeMeta.contentEncoding ? decodeMeta.contentEncoding : 'identity',
+      content_encoding:
+        decodeMeta && decodeMeta.contentEncoding ? decodeMeta.contentEncoding : 'identity',
       decompressed: Boolean(decodeMeta && decodeMeta.decompressed),
       decode_source: decodeMeta && decodeMeta.decodeSource ? decodeMeta.decodeSource : 'identity',
       decode_error: decodeMeta && decodeMeta.decodeError ? decodeMeta.decodeError : null,
@@ -747,7 +765,8 @@ function patchHttpsRequest() {
       res.__anthropicCaptureAttached = true
 
       const responseHeaders = sanitizeHeaders(res.headers || {})
-      const contentTypeRaw = responseHeaders['content-type'] || responseHeaders['Content-Type'] || ''
+      const contentTypeRaw =
+        responseHeaders['content-type'] || responseHeaders['Content-Type'] || ''
       const contentType = String(contentTypeRaw || '').toLowerCase()
       const isStreamResponse = contentType.includes('text/event-stream')
 

@@ -88,7 +88,8 @@ function parseHosts(rawValue) {
 }
 
 function parseCsvList(rawValue, fallbackRaw) {
-  const source = rawValue !== undefined && rawValue !== null && rawValue !== '' ? rawValue : fallbackRaw
+  const source =
+    rawValue !== undefined && rawValue !== null && rawValue !== '' ? rawValue : fallbackRaw
   return String(source || '')
     .split(',')
     .map((item) => item.trim())
@@ -104,10 +105,7 @@ function parseCaptureMethods(rawValue) {
 }
 
 function parseCapturePathPrefixes(rawValue) {
-  const prefixes = parseCsvList(
-    rawValue,
-    '/v1/responses,/responses,/backend-api/codex/responses'
-  )
+  const prefixes = parseCsvList(rawValue, '/v1/responses,/responses,/backend-api/codex/responses')
   if (prefixes.includes('*')) {
     return null
   }
@@ -176,18 +174,12 @@ function safeJsonStringify(payload, maxBytes, eventType) {
   }
 
   const size = Buffer.byteLength(json, 'utf8')
-  if (size <= maxBytes) {
-    return json
+  if (size > maxBytes) {
+    logDebug(
+      `⚠️ Large record: ${eventType} is ${(size / 1024 / 1024).toFixed(2)}MB (limit was ${(maxBytes / 1024 / 1024).toFixed(0)}MB), keeping full record`
+    )
   }
-
-  const partial = Buffer.from(json, 'utf8').subarray(0, maxBytes).toString('utf8')
-  return JSON.stringify({
-    type: `${eventType}_truncated`,
-    truncated: true,
-    maxBytes,
-    originalBytes: size,
-    partialJson: partial
-  })
+  return json
 }
 
 function normalizeRequestMeta(firstArg, secondArg) {
@@ -268,7 +260,10 @@ function shouldCaptureRequest(meta) {
   if (meta.protocol !== 'https:') {
     return false
   }
-  if (config.captureMethods && !config.captureMethods.has(String(meta.method || '').toUpperCase())) {
+  if (
+    config.captureMethods &&
+    !config.captureMethods.has(String(meta.method || '').toUpperCase())
+  ) {
     return false
   }
   if (!config.capturePathPrefixes) {
@@ -281,7 +276,10 @@ function determineProviderKind(meta) {
   if (!meta) {
     return 'openai-responses'
   }
-  if (meta.hostname === 'chatgpt.com' && String(meta.path || '').startsWith('/backend-api/codex/responses')) {
+  if (
+    meta.hostname === 'chatgpt.com' &&
+    String(meta.path || '').startsWith('/backend-api/codex/responses')
+  ) {
     return 'chatgpt-codex'
   }
   return 'openai-responses'
@@ -548,7 +546,10 @@ function collectAssistantTextFromResponse(response) {
         if (!content || typeof content !== 'object') {
           continue
         }
-        if ((content.type === 'output_text' || content.type === 'text') && typeof content.text === 'string') {
+        if (
+          (content.type === 'output_text' || content.type === 'text') &&
+          typeof content.text === 'string'
+        ) {
           chunks.push(content.text)
         }
       }
@@ -688,7 +689,10 @@ function applyStreamPayload(state, payload) {
       return
     }
 
-    if (payload.type === 'response.output_item.added' || payload.type === 'response.output_item.done') {
+    if (
+      payload.type === 'response.output_item.added' ||
+      payload.type === 'response.output_item.done'
+    ) {
       const item = payload.item
       if (item && item.type === 'reasoning') {
         appendText(state.reasoningTextChunks, collectReasoningTextFromResponse({ output: [item] }))
@@ -696,7 +700,10 @@ function applyStreamPayload(state, payload) {
     }
   }
 
-  if (payload.type === 'response.function_call_arguments.delta' && typeof payload.delta === 'string') {
+  if (
+    payload.type === 'response.function_call_arguments.delta' &&
+    typeof payload.delta === 'string'
+  ) {
     mergeToolCall(state, toolCallKeyFromPayload(payload), {
       id: payload.item_id || payload.id || null,
       call_id: payload.call_id || null,
@@ -718,7 +725,10 @@ function applyStreamPayload(state, payload) {
     return
   }
 
-  if (payload.type === 'response.output_item.added' || payload.type === 'response.output_item.done') {
+  if (
+    payload.type === 'response.output_item.added' ||
+    payload.type === 'response.output_item.done'
+  ) {
     const item = payload.item
     if (item && (item.type === 'function_call' || item.type === 'custom_tool_call')) {
       mergeToolCall(state, item.call_id || item.id || payload.output_index || null, {
@@ -734,7 +744,11 @@ function applyStreamPayload(state, payload) {
     return
   }
 
-  if (payload.type === 'response.completed' && payload.response && typeof payload.response === 'object') {
+  if (
+    payload.type === 'response.completed' &&
+    payload.response &&
+    typeof payload.response === 'object'
+  ) {
     state.completedResponse = payload.response
     const structured = extractStructuredResponseFields(payload.response)
     if (structured.responseId) {
@@ -758,8 +772,7 @@ function applyStreamPayload(state, payload) {
     if (structured.toolCalls.length > 0) {
       state.toolCalls.clear()
       for (const toolCall of structured.toolCalls) {
-        const key =
-          toolCall.call_id || toolCall.id || toolCall.output_index || crypto.randomUUID()
+        const key = toolCall.call_id || toolCall.id || toolCall.output_index || crypto.randomUUID()
         state.toolCalls.set(key, toolCall)
       }
     }
@@ -921,7 +934,8 @@ function buildNonStreamRecord(
     response: {
       body_raw: responseBodyRaw,
       body_json: responseJson,
-      content_encoding: decodeMeta && decodeMeta.contentEncoding ? decodeMeta.contentEncoding : 'identity',
+      content_encoding:
+        decodeMeta && decodeMeta.contentEncoding ? decodeMeta.contentEncoding : 'identity',
       decompressed: Boolean(decodeMeta && decodeMeta.decompressed),
       decode_source: decodeMeta && decodeMeta.decodeSource ? decodeMeta.decodeSource : 'identity',
       decode_error: decodeMeta && decodeMeta.decodeError ? decodeMeta.decodeError : null,
@@ -999,7 +1013,8 @@ function patchHttpsRequest() {
       res.__openaiCaptureAttached = true
 
       const responseHeaders = sanitizeHeaders(res.headers || {})
-      const contentTypeRaw = responseHeaders['content-type'] || responseHeaders['Content-Type'] || ''
+      const contentTypeRaw =
+        responseHeaders['content-type'] || responseHeaders['Content-Type'] || ''
       const contentType = String(contentTypeRaw || '').toLowerCase()
       const isStreamResponse = contentType.includes('text/event-stream')
 

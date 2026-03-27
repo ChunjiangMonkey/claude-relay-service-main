@@ -13,7 +13,8 @@ const DEFAULT_FILES = [
   'anthropic-upstream-responses.jsonl',
   'anthropic-upstream-stream-final.jsonl',
   'openai-upstream-requests.jsonl',
-  'openai-upstream-responses.jsonl'
+  'openai-upstream-responses.jsonl',
+  'openai-upstream-stream-final.jsonl'
 ]
 
 const config = {
@@ -336,6 +337,20 @@ async function processLine(sourceFile, line) {
 
   if (eventType === 'openai_upstream_response_non_stream') {
     await upsertOpenaiNonStreamResponse(traceId, payload)
+    return
+  }
+
+  if (
+    eventType === 'openai_upstream_stream_final' ||
+    eventType === 'openai_upstream_response_stream_summary'
+  ) {
+    await upsertOpenaiStreamResponse(traceId, payload)
+    return
+  }
+
+  if (eventType === 'openai_upstream_response_transport_error') {
+    logDebug('openai_transport_error', { traceId })
+    return
   }
 }
 
@@ -520,6 +535,58 @@ async function upsertOpenaiNonStreamResponse(traceId, payload) {
     traceId,
     providerKind,
     model,
+    isStream: false,
+    responseId,
+    assistantTextFull: assistantTextFull || null,
+    reasoningTextFull: reasoningTextFull || null,
+    toolCalls: toolCalls.length > 0 ? toolCalls : null,
+    usageJson: usage,
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    cachedTokens,
+    reasoningTokens,
+    httpStatus,
+    latencyMs,
+    status
+  })
+}
+
+async function upsertOpenaiStreamResponse(traceId, payload) {
+  const providerKind = payload.provider_kind || null
+  const stream = payload.stream || {}
+
+  // stream_final has full data in .stream; stream_summary has flat fields
+  const model = stream.response_model || payload.response_model || null
+  const responseId = stream.response_id || payload.response_id || null
+  const responseStatus = stream.status || payload.status || null
+  const usage = stream.usage || payload.usage || null
+  const assistantTextFull = stream.assistant_text_full || ''
+  const reasoningTextFull = stream.reasoning_text_full || ''
+  const toolCalls = Array.isArray(stream.tool_calls) ? stream.tool_calls : []
+
+  const httpStatus = extractInt(
+    (payload.upstream && payload.upstream.statusCode) || payload.statusCode
+  )
+  const latencyMs = extractInt((payload.timing && payload.timing.latency_ms) || payload.latency_ms)
+  const hasError = Boolean(payload.error)
+  const status = hasError ? 'error' : responseStatus || 'completed'
+
+  const inputTokens = extractInt(usage && usage.input_tokens)
+  const outputTokens = extractInt(usage && usage.output_tokens)
+  const totalTokens = extractInt(usage && usage.total_tokens)
+  const cachedTokens = extractInt(
+    usage && usage.input_tokens_details && usage.input_tokens_details.cached_tokens
+  )
+  const reasoningTokens = extractInt(
+    usage && usage.output_tokens_details && usage.output_tokens_details.reasoning_tokens
+  )
+
+  await db.upsertOpenaiResponse({
+    traceId,
+    providerKind,
+    model,
+    isStream: true,
     responseId,
     assistantTextFull: assistantTextFull || null,
     reasoningTextFull: reasoningTextFull || null,
