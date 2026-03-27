@@ -7,6 +7,7 @@ const crypto = require('crypto')
 const zlib = require('zlib')
 
 const PATCH_SENTINEL = Symbol.for('claude_relay.anthropic_capture_hook.installed')
+const ACTIVE_SENTINEL = Symbol.for('claude_relay.anthropic_capture_hook.active')
 
 if (global[PATCH_SENTINEL]) {
   return
@@ -53,6 +54,7 @@ if (!config.enabled) {
 }
 
 patchHttpsRequest()
+global[ACTIVE_SENTINEL] = true
 logDebug('Anthropic capture hook installed', {
   captureDir: config.captureDir,
   hosts: Array.from(config.hosts),
@@ -528,6 +530,7 @@ function buildStreamRecord(
         (requestJson && typeof requestJson.model === 'string' ? requestJson.model : null),
       stream: true
     },
+    relay_key_id: requestRecord.relayKeyId,
     stream: {
       event_count: streamState.eventCount,
       event_types: Array.from(streamState.eventTypes),
@@ -689,6 +692,7 @@ function buildNonStreamRecord(
         (requestJson && typeof requestJson.model === 'string' ? requestJson.model : null),
       stream: Boolean(requestRecord.requestStream)
     },
+    relay_key_id: requestRecord.relayKeyId,
     response: {
       body_raw: responseBodyRaw,
       body_json: responseJson,
@@ -728,13 +732,18 @@ function patchHttpsRequest() {
     const traceId = createTraceId()
     const startedAt = new Date().toISOString()
 
+    // 提取 relay key id 用于溯源（在发往上游前删除）
+    const relayKeyId = getHeaderCaseInsensitive(requestMeta.headers, 'x-relay-key-id') || null
+    stripInternalHeaders(args)
+
     const requestChunks = []
     const requestRecord = {
       requestBodyRaw: '',
       requestBodyJson: null,
       requestModel: null,
       requestStream: false,
-      relayRequestId: null
+      relayRequestId: null,
+      relayKeyId
     }
 
     let requestWritten = false
@@ -820,6 +829,7 @@ function patchHttpsRequest() {
             ts: new Date().toISOString(),
             type: 'anthropic_upstream_response_stream_summary',
             trace_id: traceId,
+            relay_key_id: requestRecord.relayKeyId,
             statusCode: responseMeta.statusCode,
             stop_reason: streamRecord.stream.stop_reason,
             usage: streamRecord.stream.usage,
@@ -874,6 +884,7 @@ function patchHttpsRequest() {
         type: 'anthropic_upstream_response_transport_error',
         trace_id: traceId,
         capture_version: 1,
+        relay_key_id: requestRecord.relayKeyId,
         upstream: {
           protocol: requestMeta.protocol,
           host: requestMeta.host,
@@ -931,6 +942,7 @@ function persistRequestRecord(traceId, requestMeta, requestChunks, requestRecord
       method: requestMeta.method
     },
     relay_request_id: requestRecord.relayRequestId,
+    relay_key_id: requestRecord.relayKeyId,
     headers: sanitizeHeaders(requestMeta.headers),
     request_body_raw: requestBodyRaw,
     request_body_json: requestBodyJson,
@@ -950,6 +962,42 @@ function getHeaderCaseInsensitive(headers, targetKey) {
     }
   }
   return undefined
+}
+
+function stripInternalHeaders(requestArgs) {
+  const targetKey = 'x-relay-key-id'
+  const deleteHeaderCaseInsensitive = (headers) => {
+    if (!headers) {
+      return
+    }
+    if (typeof headers.delete === 'function') {
+      headers.delete(targetKey)
+      return
+    }
+    if (Array.isArray(headers)) {
+      for (let index = headers.length - 2; index >= 0; index -= 2) {
+        if (String(headers[index]).toLowerCase() === targetKey) {
+          headers.splice(index, 2)
+        }
+      }
+      return
+    }
+    if (typeof headers === 'object') {
+      for (const key of Object.keys(headers)) {
+        if (String(key).toLowerCase() === targetKey) {
+          delete headers[key]
+        }
+      }
+    }
+  }
+
+  const opts = requestArgs[0]
+  if (opts && typeof opts === 'object' && !(opts instanceof URL)) {
+    deleteHeaderCaseInsensitive(opts.headers)
+  }
+  if (requestArgs[1] && typeof requestArgs[1] === 'object') {
+    deleteHeaderCaseInsensitive(requestArgs[1].headers)
+  }
 }
 
 function captureChunk(chunks, chunk, encoding) {

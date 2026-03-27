@@ -359,13 +359,15 @@ async function upsertRequest(traceId, payload) {
   const model = payload.request_model || (requestJson && requestJson.model) || null
   const isStream = payload.request_stream === true || (requestJson && requestJson.stream === true)
   const upstreamRequestId = payload.relay_request_id || null
+  const relayKeyId = payload.relay_key_id || null
 
   await db.upsertRequest({
     traceId,
     upstreamRequestId,
     model,
     isStream,
-    requestJson
+    requestJson,
+    relayKeyId
   })
 }
 
@@ -384,6 +386,7 @@ async function upsertNonStreamResponse(traceId, payload) {
   const latencyMs = extractInt(payload.timing && payload.timing.latency_ms)
   const upstreamRequestId =
     (payload.request && payload.request.relay_request_id) || payload.relay_request_id || null
+  const relayKeyId = payload.relay_key_id || null
   const hasError = Boolean(payload.error)
 
   await db.upsertNonStreamResponse({
@@ -395,7 +398,8 @@ async function upsertNonStreamResponse(traceId, payload) {
     stopReason,
     httpStatus,
     latencyMs,
-    status: hasError ? 'error_non_stream' : 'completed_non_stream'
+    status: hasError ? 'error_non_stream' : 'completed_non_stream',
+    relayKeyId
   })
 }
 
@@ -414,6 +418,7 @@ async function upsertStreamFinal(traceId, payload) {
   const latencyMs = extractInt(payload.timing && payload.timing.latency_ms)
   const upstreamRequestId =
     (payload.request && payload.request.relay_request_id) || payload.relay_request_id || null
+  const relayKeyId = payload.relay_key_id || null
   const hasError = Boolean(payload.error)
 
   await db.upsertStreamFinal({
@@ -428,7 +433,8 @@ async function upsertStreamFinal(traceId, payload) {
     stopReason,
     httpStatus,
     latencyMs,
-    status: hasError ? 'error_stream' : 'completed_stream'
+    status: hasError ? 'error_stream' : 'completed_stream',
+    relayKeyId
   })
 }
 
@@ -436,6 +442,7 @@ async function upsertStreamSummary(traceId, payload) {
   const usage = payload.usage || null
   const stopReason = payload.stop_reason || null
   const latencyMs = extractInt(payload.latency_ms)
+  const relayKeyId = payload.relay_key_id || null
   const status = payload.error ? 'error_stream_summary' : 'stream_summary'
 
   await db.upsertStreamSummary({
@@ -443,7 +450,8 @@ async function upsertStreamSummary(traceId, payload) {
     usage,
     stopReason,
     latencyMs,
-    status
+    status,
+    relayKeyId
   })
 }
 
@@ -454,6 +462,7 @@ async function upsertTransportError(traceId, payload) {
   const httpStatus = extractInt(payload.http_status)
   const upstreamRequestId =
     (payload.request && payload.request.relay_request_id) || payload.relay_request_id || null
+  const relayKeyId = payload.relay_key_id || null
 
   await db.upsertTransportError({
     traceId,
@@ -461,7 +470,8 @@ async function upsertTransportError(traceId, payload) {
     model,
     isStream,
     httpStatus,
-    latencyMs
+    latencyMs,
+    relayKeyId
   })
 }
 
@@ -470,19 +480,22 @@ async function upsertOpenaiRequest(traceId, payload) {
   const model = payload.request_model || (requestJson && requestJson.model) || null
   const isStream = payload.request_stream === true || (requestJson && requestJson.stream === true)
   const providerKind = payload.provider_kind || null
+  const relayKeyId = payload.relay_key_id || null
 
   await db.upsertOpenaiRequest({
     traceId,
     providerKind,
     model,
     isStream,
-    requestJson
+    requestJson,
+    relayKeyId
   })
 }
 
 async function upsertOpenaiNonStreamResponse(traceId, payload) {
   const resp = payload.response || {}
   const providerKind = payload.provider_kind || null
+  const relayKeyId = payload.relay_key_id || null
 
   // Try SSE parsing on body_raw first (handles cases where body is SSE text)
   const sseParsed = parseOpenaiSse(resp.body_raw)
@@ -548,12 +561,14 @@ async function upsertOpenaiNonStreamResponse(traceId, payload) {
     reasoningTokens,
     httpStatus,
     latencyMs,
-    status
+    status,
+    relayKeyId
   })
 }
 
 async function upsertOpenaiStreamResponse(traceId, payload) {
   const providerKind = payload.provider_kind || null
+  const relayKeyId = payload.relay_key_id || null
   const stream = payload.stream || {}
 
   // stream_final has full data in .stream; stream_summary has flat fields
@@ -599,7 +614,8 @@ async function upsertOpenaiStreamResponse(traceId, payload) {
     reasoningTokens,
     httpStatus,
     latencyMs,
-    status
+    status,
+    relayKeyId
   })
 }
 

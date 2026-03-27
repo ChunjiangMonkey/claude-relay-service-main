@@ -1,6 +1,7 @@
-# OpenAI Upstream Capture (Phase 1)
+# OpenAI Upstream Capture
 
-This extension captures **OpenAI upstream** traffic into JSONL files only. It does not write to MySQL/PostgreSQL yet.
+This extension captures **OpenAI upstream** traffic into JSONL files.
+When the shared collector is enabled, those JSONL files are also ingested into MySQL/PostgreSQL via `extensions/anthropic-capture/collector`.
 
 ## Scope
 

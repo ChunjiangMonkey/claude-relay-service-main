@@ -8,6 +8,7 @@ const zlib = require('zlib')
 const { IncrementalSSEParser } = require('../../../src/utils/sseParser')
 
 const PATCH_SENTINEL = Symbol.for('claude_relay.openai_capture_hook.installed')
+const ACTIVE_SENTINEL = Symbol.for('claude_relay.openai_capture_hook.active')
 
 if (global[PATCH_SENTINEL]) {
   return
@@ -52,6 +53,7 @@ if (!config.enabled) {
 }
 
 patchHttpsRequest()
+global[ACTIVE_SENTINEL] = true
 logDebug('OpenAI capture hook installed', {
   captureDir: config.captureDir,
   hosts: Array.from(config.hosts),
@@ -300,6 +302,42 @@ function getHeaderCaseInsensitive(headers, targetKey) {
     }
   }
   return undefined
+}
+
+function stripInternalHeaders(requestArgs) {
+  const targetKey = 'x-relay-key-id'
+  const deleteHeaderCaseInsensitive = (headers) => {
+    if (!headers) {
+      return
+    }
+    if (typeof headers.delete === 'function') {
+      headers.delete(targetKey)
+      return
+    }
+    if (Array.isArray(headers)) {
+      for (let index = headers.length - 2; index >= 0; index -= 2) {
+        if (String(headers[index]).toLowerCase() === targetKey) {
+          headers.splice(index, 2)
+        }
+      }
+      return
+    }
+    if (typeof headers === 'object') {
+      for (const key of Object.keys(headers)) {
+        if (String(key).toLowerCase() === targetKey) {
+          delete headers[key]
+        }
+      }
+    }
+  }
+
+  const opts = requestArgs[0]
+  if (opts && typeof opts === 'object' && !(opts instanceof URL)) {
+    deleteHeaderCaseInsensitive(opts.headers)
+  }
+  if (requestArgs[1] && typeof requestArgs[1] === 'object') {
+    deleteHeaderCaseInsensitive(requestArgs[1].headers)
+  }
 }
 
 function extractAuthInfo(headers) {
@@ -864,6 +902,7 @@ function buildStreamRecord(
       authorization_sha256: requestRecord.authorizationSha256,
       authorization_header_name: requestRecord.authorizationHeaderName
     },
+    relay_key_id: requestRecord.relayKeyId,
     stream: {
       event_count: streamState.eventCount,
       event_types: Array.from(streamState.eventTypes),
@@ -931,6 +970,7 @@ function buildNonStreamRecord(
       authorization_sha256: requestRecord.authorizationSha256,
       authorization_header_name: requestRecord.authorizationHeaderName
     },
+    relay_key_id: requestRecord.relayKeyId,
     response: {
       body_raw: responseBodyRaw,
       body_json: responseJson,
@@ -974,6 +1014,10 @@ function patchHttpsRequest() {
     const traceId = createTraceId()
     const startedAt = new Date().toISOString()
 
+    // 提取 relay key id 用于溯源（在发往上游前删除）
+    const relayKeyId = getHeaderCaseInsensitive(requestMeta.headers, 'x-relay-key-id') || null
+    stripInternalHeaders(args)
+
     const requestChunks = []
     const requestRecord = {
       requestBodyRaw: '',
@@ -982,7 +1026,8 @@ function patchHttpsRequest() {
       requestStream: false,
       authorizationRaw: null,
       authorizationSha256: null,
-      authorizationHeaderName: null
+      authorizationHeaderName: null,
+      relayKeyId
     }
 
     let requestWritten = false
@@ -1064,6 +1109,7 @@ function patchHttpsRequest() {
             trace_id: traceId,
             capture_version: 1,
             provider_kind: providerKind,
+            relay_key_id: requestRecord.relayKeyId,
             statusCode: responseMeta.statusCode,
             response_id: streamRecord.stream.response_id,
             response_model: streamRecord.stream.response_model,
@@ -1121,6 +1167,7 @@ function patchHttpsRequest() {
         trace_id: traceId,
         capture_version: 1,
         provider_kind: providerKind,
+        relay_key_id: requestRecord.relayKeyId,
         upstream: {
           protocol: requestMeta.protocol,
           host: requestMeta.host,
@@ -1183,6 +1230,7 @@ function persistRequestRecord(traceId, providerKind, requestMeta, requestChunks,
     authorization_header_name: authInfo.authorizationHeaderName,
     authorization_raw: authInfo.authorizationRaw,
     authorization_sha256: authInfo.authorizationSha256,
+    relay_key_id: requestRecord.relayKeyId,
     request_body_raw: requestBodyRaw,
     request_body_json: requestBodyJson,
     request_model: requestRecord.requestModel,

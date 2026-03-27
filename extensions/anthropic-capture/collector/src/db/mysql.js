@@ -46,6 +46,12 @@ function createMysqlAdapter(config) {
     // Do explicit column existence checks for cross-variant compatibility.
     await ensureColumnExists('anthropic_interactions', 'thought_text_full', 'LONGTEXT NULL')
     await ensureColumnExists('anthropic_interactions', 'response_message_id', 'VARCHAR(255) NULL')
+    await ensureColumnExists('anthropic_interactions', 'relay_key_id', 'VARCHAR(255) NULL')
+    await ensureColumnExists('openai_interactions', 'relay_key_id', 'VARCHAR(255) NULL')
+
+    // Add indexes for relay_key_id
+    await ensureIndexExists('anthropic_interactions', 'idx_anthropic_relay_key', 'relay_key_id')
+    await ensureIndexExists('openai_interactions', 'idx_openai_relay_key', 'relay_key_id')
   }
 
   async function ensureColumnExists(tableName, columnName, columnDefinitionSql) {
@@ -66,6 +72,26 @@ function createMysqlAdapter(config) {
     }
 
     await pool.query(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinitionSql}`)
+  }
+
+  async function ensureIndexExists(tableName, indexName, columnName) {
+    const [rows] = await pool.execute(
+      `
+      SELECT COUNT(*) AS cnt
+      FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = ?
+        AND INDEX_NAME = ?
+      `,
+      [tableName, indexName]
+    )
+
+    const exists = Number(rows && rows[0] && rows[0].cnt) > 0
+    if (exists) {
+      return
+    }
+
+    await pool.query(`ALTER TABLE ${tableName} ADD INDEX ${indexName} (${columnName})`)
   }
 
   async function loadOffsets() {
@@ -103,17 +129,19 @@ function createMysqlAdapter(config) {
         model,
         is_stream,
         request_json,
+        relay_key_id,
         status,
         first_seen_at,
         last_seen_at,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, 'request_captured', CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3))
+      ) VALUES (?, ?, ?, ?, ?, ?, 'request_captured', CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3))
       ON DUPLICATE KEY UPDATE
         upstream_request_id = COALESCE(VALUES(upstream_request_id), upstream_request_id),
         model = COALESCE(VALUES(model), model),
         is_stream = COALESCE(VALUES(is_stream), is_stream),
         request_json = COALESCE(VALUES(request_json), request_json),
+        relay_key_id = COALESCE(VALUES(relay_key_id), relay_key_id),
         last_seen_at = IF(
           (
             COALESCE(VALUES(upstream_request_id), upstream_request_id) <=> upstream_request_id
@@ -140,7 +168,8 @@ function createMysqlAdapter(config) {
         record.upstreamRequestId,
         record.model,
         record.isStream,
-        toJsonString(record.requestJson)
+        toJsonString(record.requestJson),
+        record.relayKeyId
       ]
     )
   }
@@ -158,6 +187,7 @@ function createMysqlAdapter(config) {
         stop_reason,
         http_status,
         latency_ms,
+        relay_key_id,
         status,
         first_seen_at,
         last_seen_at,
@@ -168,6 +198,7 @@ function createMysqlAdapter(config) {
         ?,
         ?,
         FALSE,
+        ?,
         ?,
         ?,
         ?,
@@ -188,6 +219,7 @@ function createMysqlAdapter(config) {
         stop_reason = COALESCE(VALUES(stop_reason), stop_reason),
         http_status = COALESCE(VALUES(http_status), http_status),
         latency_ms = COALESCE(VALUES(latency_ms), latency_ms),
+        relay_key_id = COALESCE(VALUES(relay_key_id), relay_key_id),
         status = VALUES(status),
         last_seen_at = IF(
           (
@@ -229,6 +261,7 @@ function createMysqlAdapter(config) {
         record.stopReason,
         record.httpStatus,
         record.latencyMs,
+        record.relayKeyId,
         record.status
       ]
     )
@@ -250,6 +283,7 @@ function createMysqlAdapter(config) {
         stop_reason,
         http_status,
         latency_ms,
+        relay_key_id,
         status,
         first_seen_at,
         last_seen_at,
@@ -260,6 +294,7 @@ function createMysqlAdapter(config) {
         ?,
         ?,
         TRUE,
+        ?,
         ?,
         ?,
         ?,
@@ -286,6 +321,7 @@ function createMysqlAdapter(config) {
         stop_reason = COALESCE(VALUES(stop_reason), stop_reason),
         http_status = COALESCE(VALUES(http_status), http_status),
         latency_ms = COALESCE(VALUES(latency_ms), latency_ms),
+        relay_key_id = COALESCE(VALUES(relay_key_id), relay_key_id),
         status = VALUES(status),
         last_seen_at = IF(
           (
@@ -336,6 +372,7 @@ function createMysqlAdapter(config) {
         record.stopReason,
         record.httpStatus,
         record.latencyMs,
+        record.relayKeyId,
         record.status
       ]
     )
@@ -350,17 +387,19 @@ function createMysqlAdapter(config) {
         usage_json,
         stop_reason,
         latency_ms,
+        relay_key_id,
         status,
         first_seen_at,
         last_seen_at,
         created_at,
         updated_at
-      ) VALUES (?, TRUE, ?, ?, ?, ?, CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3))
+      ) VALUES (?, TRUE, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3))
       ON DUPLICATE KEY UPDATE
         is_stream = TRUE,
         usage_json = COALESCE(VALUES(usage_json), usage_json),
         stop_reason = COALESCE(VALUES(stop_reason), stop_reason),
         latency_ms = COALESCE(VALUES(latency_ms), latency_ms),
+        relay_key_id = COALESCE(VALUES(relay_key_id), relay_key_id),
         status = COALESCE(status, VALUES(status)),
         last_seen_at = IF(
           (
@@ -368,6 +407,7 @@ function createMysqlAdapter(config) {
             AND COALESCE(VALUES(usage_json), usage_json) <=> usage_json
             AND COALESCE(VALUES(stop_reason), stop_reason) <=> stop_reason
             AND COALESCE(VALUES(latency_ms), latency_ms) <=> latency_ms
+            AND COALESCE(VALUES(relay_key_id), relay_key_id) <=> relay_key_id
             AND COALESCE(status, VALUES(status)) <=> status
           ),
           last_seen_at,
@@ -379,6 +419,7 @@ function createMysqlAdapter(config) {
             AND COALESCE(VALUES(usage_json), usage_json) <=> usage_json
             AND COALESCE(VALUES(stop_reason), stop_reason) <=> stop_reason
             AND COALESCE(VALUES(latency_ms), latency_ms) <=> latency_ms
+            AND COALESCE(VALUES(relay_key_id), relay_key_id) <=> relay_key_id
             AND COALESCE(status, VALUES(status)) <=> status
           ),
           updated_at,
@@ -390,6 +431,7 @@ function createMysqlAdapter(config) {
         toJsonString(record.usage),
         record.stopReason,
         record.latencyMs,
+        record.relayKeyId,
         record.status
       ]
     )
@@ -405,18 +447,20 @@ function createMysqlAdapter(config) {
         is_stream,
         http_status,
         latency_ms,
+        relay_key_id,
         status,
         first_seen_at,
         last_seen_at,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'transport_error', CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3))
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'transport_error', CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3))
       ON DUPLICATE KEY UPDATE
         upstream_request_id = COALESCE(VALUES(upstream_request_id), upstream_request_id),
         model = COALESCE(VALUES(model), model),
         is_stream = COALESCE(VALUES(is_stream), is_stream),
         http_status = COALESCE(VALUES(http_status), http_status),
         latency_ms = COALESCE(VALUES(latency_ms), latency_ms),
+        relay_key_id = COALESCE(VALUES(relay_key_id), relay_key_id),
         status = 'transport_error',
         last_seen_at = IF(
           (
@@ -449,7 +493,8 @@ function createMysqlAdapter(config) {
         record.model,
         record.isStream,
         record.httpStatus,
-        record.latencyMs
+        record.latencyMs,
+        record.relayKeyId
       ]
     )
   }
@@ -463,17 +508,19 @@ function createMysqlAdapter(config) {
         model,
         is_stream,
         request_json,
+        relay_key_id,
         status,
         first_seen_at,
         last_seen_at,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, 'request_captured', CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3))
+      ) VALUES (?, ?, ?, ?, ?, ?, 'request_captured', CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3))
       ON DUPLICATE KEY UPDATE
         provider_kind = COALESCE(VALUES(provider_kind), provider_kind),
         model = COALESCE(VALUES(model), model),
         is_stream = COALESCE(VALUES(is_stream), is_stream),
         request_json = COALESCE(VALUES(request_json), request_json),
+        relay_key_id = COALESCE(VALUES(relay_key_id), relay_key_id),
         last_seen_at = CURRENT_TIMESTAMP(3),
         updated_at = CURRENT_TIMESTAMP(3)
       `,
@@ -482,7 +529,8 @@ function createMysqlAdapter(config) {
         record.providerKind,
         record.model,
         record.isStream,
-        toJsonString(record.requestJson)
+        toJsonString(record.requestJson),
+        record.relayKeyId
       ]
     )
   }
@@ -507,12 +555,14 @@ function createMysqlAdapter(config) {
         reasoning_tokens,
         http_status,
         latency_ms,
+        relay_key_id,
         status,
         first_seen_at,
         last_seen_at,
         created_at,
         updated_at
       ) VALUES (
+        ?,
         ?,
         ?,
         ?,
@@ -551,6 +601,7 @@ function createMysqlAdapter(config) {
         reasoning_tokens = COALESCE(VALUES(reasoning_tokens), reasoning_tokens),
         http_status = COALESCE(VALUES(http_status), http_status),
         latency_ms = COALESCE(VALUES(latency_ms), latency_ms),
+        relay_key_id = COALESCE(VALUES(relay_key_id), relay_key_id),
         status = VALUES(status),
         last_seen_at = CURRENT_TIMESTAMP(3),
         updated_at = CURRENT_TIMESTAMP(3)
@@ -572,6 +623,7 @@ function createMysqlAdapter(config) {
         record.reasoningTokens,
         record.httpStatus,
         record.latencyMs,
+        record.relayKeyId,
         record.status
       ]
     )

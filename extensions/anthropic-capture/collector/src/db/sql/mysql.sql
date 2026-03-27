@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS anthropic_interactions (
   assistant_text_full LONGTEXT,
   thought_text_full LONGTEXT,
   response_message_id VARCHAR(255),
+  relay_key_id VARCHAR(255),
   tool_calls JSON,
   usage_json JSON,
   stop_reason VARCHAR(255),
@@ -34,7 +35,8 @@ CREATE TABLE IF NOT EXISTS anthropic_interactions (
   updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   KEY idx_anthropic_interactions_status (status),
   KEY idx_anthropic_interactions_model (model),
-  KEY idx_anthropic_interactions_last_seen (last_seen_at)
+  KEY idx_anthropic_interactions_last_seen (last_seen_at),
+  KEY idx_anthropic_relay_key (relay_key_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS collector_offsets (
@@ -61,6 +63,7 @@ CREATE TABLE IF NOT EXISTS openai_interactions (
   total_tokens INT,
   cached_tokens INT,
   reasoning_tokens INT,
+  relay_key_id VARCHAR(255),
   status VARCHAR(64),
   http_status INT,
   latency_ms INT,
@@ -71,7 +74,8 @@ CREATE TABLE IF NOT EXISTS openai_interactions (
   KEY idx_openai_status (status),
   KEY idx_openai_model (model),
   KEY idx_openai_provider (provider_kind),
-  KEY idx_openai_last_seen (last_seen_at)
+  KEY idx_openai_last_seen (last_seen_at),
+  KEY idx_openai_relay_key (relay_key_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS ingest_errors (

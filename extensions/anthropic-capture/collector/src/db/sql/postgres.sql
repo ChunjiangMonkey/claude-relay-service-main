@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS anthropic_interactions (
   assistant_text_full TEXT,
   thought_text_full TEXT,
   response_message_id TEXT,
+  relay_key_id TEXT,
   tool_calls JSONB,
   usage JSONB,
   stop_reason TEXT,
@@ -37,6 +38,7 @@ CREATE TABLE IF NOT EXISTS anthropic_interactions (
 CREATE INDEX IF NOT EXISTS idx_anthropic_interactions_status ON anthropic_interactions(status);
 CREATE INDEX IF NOT EXISTS idx_anthropic_interactions_model ON anthropic_interactions(model);
 CREATE INDEX IF NOT EXISTS idx_anthropic_interactions_last_seen ON anthropic_interactions(last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_anthropic_relay_key ON anthropic_interactions(relay_key_id);
 
 CREATE TABLE IF NOT EXISTS collector_offsets (
   file_path TEXT PRIMARY KEY,
@@ -62,6 +64,7 @@ CREATE TABLE IF NOT EXISTS openai_interactions (
   total_tokens INTEGER,
   cached_tokens INTEGER,
   reasoning_tokens INTEGER,
+  relay_key_id TEXT,
   status TEXT,
   http_status INTEGER,
   latency_ms INTEGER,
@@ -75,6 +78,7 @@ CREATE INDEX IF NOT EXISTS idx_openai_status ON openai_interactions(status);
 CREATE INDEX IF NOT EXISTS idx_openai_model ON openai_interactions(model);
 CREATE INDEX IF NOT EXISTS idx_openai_provider ON openai_interactions(provider_kind);
 CREATE INDEX IF NOT EXISTS idx_openai_last_seen ON openai_interactions(last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_openai_relay_key ON openai_interactions(relay_key_id);
 
 CREATE TABLE IF NOT EXISTS ingest_errors (
   id BIGSERIAL PRIMARY KEY,
