@@ -20,6 +20,7 @@ const {
   extractOpenAICacheReadTokens
 } = require('../utils/requestDetailHelper')
 const requestBodyRuleService = require('../services/requestBodyRuleService')
+const { buildCodexUpstreamHeaders } = require('../utils/openaiCodexUpstreamHeaders')
 
 // Codex CLI 系统提示词（非 Codex CLI 客户端请求时注入，统一端点也使用）
 const CODEX_CLI_INSTRUCTIONS =
@@ -409,21 +410,15 @@ const handleResponses = async (req, res) => {
     // 基于白名单构造上游所需的请求头，确保键为小写且值受控
     const incoming = req.headers || {}
 
-    const allowedKeys = ['version', 'openai-beta', 'session_id']
-
-    const headers = {}
-    for (const key of allowedKeys) {
-      if (incoming[key] !== undefined) {
-        headers[key] = incoming[key]
-      }
-    }
-
     // 覆盖或新增必要头部
-    headers['authorization'] = `Bearer ${accessToken}`
-    headers['chatgpt-account-id'] = account.accountId || account.chatgptUserId || accountId
-    headers['host'] = 'chatgpt.com'
-    headers['accept'] = isStream ? 'text/event-stream' : 'application/json'
-    headers['content-type'] = 'application/json'
+    const headers = buildCodexUpstreamHeaders({
+      incomingHeaders: incoming,
+      accessToken,
+      account,
+      accountId,
+      isStream,
+      apiKeyId: apiKeyData.id
+    })
     if (!compactRoute) {
       req.body['store'] = false
     } else if (req.body && Object.prototype.hasOwnProperty.call(req.body, 'store')) {

@@ -24,7 +24,11 @@ const {
   getHttpsAgentForNonStream,
   getPricingData
 } = require('../../utils/performanceOptimizer')
-const ANTHROPIC_CAPTURE_HOOK_ACTIVE = Symbol.for('claude_relay.anthropic_capture_hook.active')
+const {
+  ANTHROPIC_CAPTURE_HOOK_ACTIVE,
+  getRelayKeyIdForActiveCapture,
+  attachRelayKeyIdHeader
+} = require('../../utils/relayKeyCapture')
 
 // structuredClone polyfill for Node < 17
 const safeClone =
@@ -708,7 +712,10 @@ class ClaudeRelayService {
 
       let requestOptions = {
         ...options,
-        relayKeyId: global[ANTHROPIC_CAPTURE_HOOK_ACTIVE] ? apiKeyData?.id || '' : ''
+        relayKeyId: getRelayKeyIdForActiveCapture(
+          apiKeyData?.id || '',
+          ANTHROPIC_CAPTURE_HOOK_ACTIVE
+        )
       }
       let { response, retryCount } = await makeRequestWithRetries(requestOptions)
 
@@ -1646,9 +1653,7 @@ class ClaudeRelayService {
     headers['accept-encoding'] = 'identity'
 
     // 注入 relay key id 用于抓取数据溯源（hook 会在发往上游前删除此 header）
-    if (requestOptions.relayKeyId && global[ANTHROPIC_CAPTURE_HOOK_ACTIVE]) {
-      headers['x-relay-key-id'] = requestOptions.relayKeyId
-    }
+    attachRelayKeyIdHeader(headers, requestOptions.relayKeyId, ANTHROPIC_CAPTURE_HOOK_ACTIVE)
 
     // 使用统一 User-Agent 或客户端提供的，最后使用默认值
     const userAgent = unifiedUA || headers['user-agent'] || 'claude-cli/1.0.119 (external, cli)'
@@ -2084,7 +2089,10 @@ class ClaudeRelayService {
           ...options,
           bodyStoreId,
           isRealClaudeCodeRequest,
-          relayKeyId: global[ANTHROPIC_CAPTURE_HOOK_ACTIVE] ? apiKeyData?.id || '' : ''
+          relayKeyId: getRelayKeyIdForActiveCapture(
+            apiKeyData?.id || '',
+            ANTHROPIC_CAPTURE_HOOK_ACTIVE
+          )
         },
         isDedicatedOfficialAccount,
         // 📬 新增回调：在收到响应头时释放队列锁
