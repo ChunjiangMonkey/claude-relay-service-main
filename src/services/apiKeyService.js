@@ -866,12 +866,16 @@ class ApiKeyService {
 
     for (const key of allKeys) {
       const tags = Array.isArray(key.tags) ? key.tags : []
-      if (!tags.includes(tagName)) continue
+      if (!tags.includes(tagName)) {
+        continue
+      }
       count++
       const match = key.name && key.name.match(pattern)
       if (match) {
         const seq = parseInt(match[1], 10)
-        if (seq > maxSeq) maxSeq = seq
+        if (seq > maxSeq) {
+          maxSeq = seq
+        }
       }
     }
 
