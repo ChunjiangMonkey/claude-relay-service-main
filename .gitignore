@@ -238,6 +238,13 @@ cache/
 # Build artifacts
 build/
 dist/
+
+# Local planning / deployment scratch files
+findings.md
+progress.md
+task_plan.md
+scripts/zeabur-start-command-inline.txt
+scripts/zeabur-start-with-capture-and-collector.sh
 out/
 
 # Runtime files
