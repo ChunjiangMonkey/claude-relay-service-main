@@ -20,10 +20,14 @@ const {
 
 const REQUEST_DETAIL_ITEM_PREFIX = 'request_detail:item:'
 const REQUEST_DETAIL_DAY_INDEX_PREFIX = 'request_detail:index:day:'
+const REQUEST_DETAIL_QUERY_SNAPSHOT_PREFIX = 'request_detail:query_snapshot:'
 const DEFAULT_RETENTION_HOURS = 6
 const MAX_RETENTION_HOURS = 30 * 24
 const REQUEST_DETAIL_QUERY_BATCH_SIZE = 200
 const REQUEST_DETAIL_SCAN_BATCH_SIZE = 200
+const REQUEST_DETAIL_QUERY_SNAPSHOT_TTL_SECONDS = 30
+const MAX_REQUEST_DETAIL_SNAPSHOT_POINTERS = 25000
+const MAX_REQUEST_DETAIL_SNAPSHOT_BYTES = 2 * 1024 * 1024
 
 const accountTypeNames = {
   claude: 'Claude官方',
@@ -121,7 +125,7 @@ function toMillis(value) {
   return date.getTime()
 }
 
-function safeJsonParse(value) {
+function safeJsonParse(value, label = 'request detail record') {
   if (!value) {
     return null
   }
@@ -129,13 +133,197 @@ function safeJsonParse(value) {
   try {
     return JSON.parse(value)
   } catch (error) {
-    logger.warn(`⚠️ Failed to parse request detail record: ${error.message}`)
+    logger.warn(`⚠️ Failed to parse ${label}: ${error.message}`)
     return null
   }
 }
 
 function makeRequestDetailId() {
   return `rd_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
+}
+
+function makeRequestDetailQuerySnapshotId() {
+  return `rds_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
+}
+
+function normalizeOptionalFilterValue(value) {
+  if (value === null || value === undefined) {
+    return null
+  }
+
+  const normalized = String(value).trim()
+  return normalized ? normalized : null
+}
+
+function createRequestDetailDateBoundarySignature(type, rawValue, effectiveValue, boundaryValue) {
+  if (!rawValue) {
+    return {
+      mode: 'absent',
+      value: null
+    }
+  }
+
+  const rawDate = rawValue instanceof Date ? rawValue : new Date(rawValue)
+  const effectiveIso = toIsoString(effectiveValue)
+  if (type === 'start') {
+    const floorDate =
+      boundaryValue instanceof Date ? boundaryValue : new Date(boundaryValue || Date.now())
+    if (rawDate.getTime() <= floorDate.getTime()) {
+      return {
+        mode: 'retention_floor',
+        value: effectiveIso
+      }
+    }
+  }
+
+  if (type === 'end') {
+    const ceilingDate =
+      boundaryValue instanceof Date ? boundaryValue : new Date(boundaryValue || Date.now())
+    if (rawDate.getTime() >= ceilingDate.getTime()) {
+      return {
+        mode: 'now_cap',
+        value: effectiveIso
+      }
+    }
+  }
+
+  return {
+    mode: 'fixed',
+    value: rawDate.toISOString()
+  }
+}
+
+function normalizeRequestDetailDateBoundarySignature(boundary = {}, legacyValue = null) {
+  if (!boundary || typeof boundary !== 'object' || Array.isArray(boundary)) {
+    return {
+      mode: legacyValue ? 'fixed' : 'absent',
+      value: toIsoString(legacyValue)
+    }
+  }
+
+  const allowedModes = new Set(['absent', 'fixed', 'retention_floor', 'now_cap'])
+  const mode = allowedModes.has(boundary.mode) ? boundary.mode : legacyValue ? 'fixed' : 'absent'
+  return {
+    mode,
+    value: toIsoString(boundary.value)
+  }
+}
+
+function createRequestDetailFilterSignature(
+  filters = {},
+  dateBoundarySignature = {},
+  retentionHours = null
+) {
+  return {
+    keyword: normalizeOptionalFilterValue(filters.keyword),
+    apiKeyId: normalizeOptionalFilterValue(filters.apiKeyId),
+    accountId: normalizeOptionalFilterValue(filters.accountId),
+    model: normalizeOptionalFilterValue(filters.model),
+    endpoint: normalizeOptionalFilterValue(filters.endpoint),
+    sortOrder: filters.sortOrder === 'asc' ? 'asc' : 'desc',
+    retentionHours:
+      retentionHours !== null && retentionHours !== undefined ? Number(retentionHours) : null,
+    startBoundary: normalizeRequestDetailDateBoundarySignature(dateBoundarySignature.startBoundary),
+    endBoundary: normalizeRequestDetailDateBoundarySignature(dateBoundarySignature.endBoundary)
+  }
+}
+
+function requestDetailDateBoundarySignaturesMatch(snapshotBoundary, currentBoundary, type) {
+  if (snapshotBoundary.mode === currentBoundary.mode) {
+    if (snapshotBoundary.mode === 'fixed') {
+      return snapshotBoundary.value === currentBoundary.value
+    }
+    return true
+  }
+
+  if (type === 'end') {
+    return (
+      snapshotBoundary.mode === 'now_cap' &&
+      currentBoundary.mode === 'fixed' &&
+      snapshotBoundary.value === currentBoundary.value
+    )
+  }
+
+  return false
+}
+
+function requestDetailFilterSignaturesMatch(snapshotSignature, currentSignature) {
+  const normalizedSnapshot = createRequestDetailFilterSignature(
+    snapshotSignature,
+    {
+      startBoundary: snapshotSignature?.startBoundary || {
+        mode: snapshotSignature?.startDate ? 'fixed' : 'absent',
+        value: snapshotSignature?.startDate || null
+      },
+      endBoundary: snapshotSignature?.endBoundary || {
+        mode: snapshotSignature?.endDate ? 'fixed' : 'absent',
+        value: snapshotSignature?.endDate || null
+      }
+    },
+    snapshotSignature?.retentionHours
+  )
+  const normalizedCurrent = createRequestDetailFilterSignature(
+    currentSignature,
+    {
+      startBoundary: currentSignature?.startBoundary,
+      endBoundary: currentSignature?.endBoundary
+    },
+    currentSignature?.retentionHours
+  )
+
+  return (
+    normalizedSnapshot.keyword === normalizedCurrent.keyword &&
+    normalizedSnapshot.apiKeyId === normalizedCurrent.apiKeyId &&
+    normalizedSnapshot.accountId === normalizedCurrent.accountId &&
+    normalizedSnapshot.model === normalizedCurrent.model &&
+    normalizedSnapshot.endpoint === normalizedCurrent.endpoint &&
+    normalizedSnapshot.sortOrder === normalizedCurrent.sortOrder &&
+    normalizedSnapshot.retentionHours === normalizedCurrent.retentionHours &&
+    requestDetailDateBoundarySignaturesMatch(
+      normalizedSnapshot.startBoundary,
+      normalizedCurrent.startBoundary,
+      'start'
+    ) &&
+    requestDetailDateBoundarySignaturesMatch(
+      normalizedSnapshot.endBoundary,
+      normalizedCurrent.endBoundary,
+      'end'
+    )
+  )
+}
+
+function flattenMatchedPointers(pointers = []) {
+  const flattened = []
+
+  for (const pointer of pointers) {
+    const requestId = pointer?.requestId || null
+    const timestampMs = Number(pointer?.timestampMs)
+
+    if (!requestId || !Number.isFinite(timestampMs)) {
+      continue
+    }
+
+    flattened.push(requestId, timestampMs)
+  }
+
+  return flattened
+}
+
+function inflateMatchedPointers(flattened = []) {
+  const pointers = []
+
+  for (let index = 0; index < flattened.length; index += 2) {
+    const requestId = flattened[index]
+    const timestampMs = Number(flattened[index + 1])
+
+    if (!requestId || !Number.isFinite(timestampMs)) {
+      continue
+    }
+
+    pointers.push({ requestId, timestampMs })
+  }
+
+  return pointers
 }
 
 class RequestDetailValidationError extends Error {
@@ -337,6 +525,7 @@ class RequestDetailService {
       captureEnabled: settings.captureEnabled,
       retentionHours: settings.retentionHours,
       bodyPreviewEnabled: settings.bodyPreviewEnabled,
+      snapshotId: null,
       records: [],
       pagination: {
         currentPage: 1,
@@ -803,7 +992,349 @@ class RequestDetailService {
     )
   }
 
+  _matchesStructuredFilters(record, filters = {}) {
+    if (filters.apiKeyId && record.apiKeyId !== filters.apiKeyId) {
+      return false
+    }
+    if (filters.accountId && record.accountId !== filters.accountId) {
+      return false
+    }
+    if (filters.model && record.model !== filters.model) {
+      return false
+    }
+    if (filters.endpoint && record.endpoint !== filters.endpoint) {
+      return false
+    }
+
+    return true
+  }
+
+  _buildResponseFilters(filters, effectiveStart, effectiveEnd, sortOrder) {
+    return {
+      startDate: effectiveStart.toISOString(),
+      endDate: effectiveEnd.toISOString(),
+      keyword: filters.keyword || null,
+      apiKeyId: filters.apiKeyId || null,
+      accountId: filters.accountId || null,
+      model: filters.model || null,
+      endpoint: filters.endpoint || null,
+      hasCustomDateRange: Boolean(filters.startDate || filters.endDate),
+      sortOrder
+    }
+  }
+
+  _hydrateRawRecord(rawItem, pointer = {}) {
+    const parsed = restoreRecordTimestamp(
+      safeJsonParse(rawItem),
+      Number(pointer?.timestampMs) || Date.now()
+    )
+
+    if (!parsed) {
+      return null
+    }
+
+    if (!parsed.requestId && pointer?.requestId) {
+      parsed.requestId = pointer.requestId
+    }
+
+    return parsed
+  }
+
+  async _loadPointerBatchRecords(pointerBatch = [], client = redis.getClient()) {
+    if (!client || !Array.isArray(pointerBatch) || pointerBatch.length === 0) {
+      return []
+    }
+
+    const itemKeys = pointerBatch.map(
+      ({ requestId }) => `${REQUEST_DETAIL_ITEM_PREFIX}${requestId}`
+    )
+    const rawItems = await client.mget(itemKeys)
+    const records = []
+
+    rawItems.forEach((rawItem, index) => {
+      const pointer = pointerBatch[index]
+      const record = this._hydrateRawRecord(rawItem, pointer)
+      if (record) {
+        records.push({ record, pointer })
+      }
+    })
+
+    return records
+  }
+
+  async _loadRecordsForPointers(pointers = [], client = redis.getClient()) {
+    const recordItems = await this._loadPointerBatchRecords(pointers, client)
+    return recordItems.map(({ record }) => record)
+  }
+
+  _paginateMatchedPointers(matchedPointers = [], requestedPage = 1, pageSize = 50) {
+    const totalRecords = matchedPointers.length
+    const totalPages = totalRecords > 0 ? Math.ceil(totalRecords / pageSize) : 0
+    const currentPage = totalPages > 0 ? Math.min(requestedPage, totalPages) : 1
+    const pageStart = (currentPage - 1) * pageSize
+    const pageEnd = pageStart + pageSize
+
+    return {
+      currentPage,
+      totalRecords,
+      totalPages,
+      pagePointers: matchedPointers.slice(pageStart, pageEnd)
+    }
+  }
+
+  async _buildPageRecords(pagePointers = []) {
+    if (!Array.isArray(pagePointers) || pagePointers.length === 0) {
+      return []
+    }
+
+    const rawRecords = await this._loadRecordsForPointers(pagePointers)
+    const enrichedRecords = await this._enrichRecords(rawRecords)
+
+    return enrichedRecords.map((record) => ({
+      ...record,
+      requestBodySnapshot: undefined
+    }))
+  }
+
+  async _buildListQueryData(filters, effectiveStart, effectiveEnd, sortOrder) {
+    const requestPointers = await this._loadRequestPointersInRange(effectiveStart, effectiveEnd)
+    if (requestPointers.length === 0) {
+      return {
+        hasSourceRecords: false,
+        matchedPointers: [],
+        availableFilters: {
+          apiKeys: [],
+          accounts: [],
+          models: [],
+          endpoints: [],
+          dateRange: {
+            earliest: null,
+            latest: null
+          }
+        },
+        summary: finalizeSummary(createSummaryAccumulator())
+      }
+    }
+
+    requestPointers.sort((a, b) =>
+      sortOrder === 'asc' ? a.timestampMs - b.timestampMs : b.timestampMs - a.timestampMs
+    )
+
+    const availableFilterAccumulator = createAvailableFilterAccumulator()
+    const summaryAccumulator = createSummaryAccumulator()
+    const matchedPointers = []
+    const client = redis.getClient()
+    const hasKeyword = Boolean(filters.keyword?.trim())
+
+    if (hasKeyword) {
+      const apiKeyCache = new Map()
+      const accountCache = new Map()
+
+      for (
+        let startIndex = 0;
+        startIndex < requestPointers.length;
+        startIndex += REQUEST_DETAIL_QUERY_BATCH_SIZE
+      ) {
+        const pointerBatch = requestPointers.slice(
+          startIndex,
+          startIndex + REQUEST_DETAIL_QUERY_BATCH_SIZE
+        )
+        const recordItems = await this._loadPointerBatchRecords(pointerBatch, client)
+        const enrichedBatch = await this._enrichRecords(
+          recordItems.map(({ record }) => record),
+          apiKeyCache,
+          accountCache
+        )
+
+        enrichedBatch.forEach((record, index) => {
+          updateAvailableFilterAccumulator(availableFilterAccumulator, record)
+
+          if (
+            !this._matchesStructuredFilters(record, filters) ||
+            !this._matchesKeyword(record, filters.keyword)
+          ) {
+            return
+          }
+
+          updateSummaryAccumulator(summaryAccumulator, record)
+
+          matchedPointers.push({
+            requestId: record.requestId,
+            timestampMs: toMillis(record.timestamp) ?? recordItems[index].pointer.timestampMs
+          })
+        })
+      }
+    } else {
+      for (
+        let startIndex = 0;
+        startIndex < requestPointers.length;
+        startIndex += REQUEST_DETAIL_QUERY_BATCH_SIZE
+      ) {
+        const pointerBatch = requestPointers.slice(
+          startIndex,
+          startIndex + REQUEST_DETAIL_QUERY_BATCH_SIZE
+        )
+        const recordItems = await this._loadPointerBatchRecords(pointerBatch, client)
+
+        for (const { record, pointer } of recordItems) {
+          updateAvailableFilterAccumulatorRaw(availableFilterAccumulator, record)
+
+          if (!this._matchesStructuredFilters(record, filters)) {
+            continue
+          }
+
+          updateSummaryAccumulator(summaryAccumulator, record)
+
+          matchedPointers.push({
+            requestId: record.requestId,
+            timestampMs: toMillis(record.timestamp) ?? pointer.timestampMs
+          })
+        }
+      }
+
+      await this._resolveFilterDisplayNames(availableFilterAccumulator)
+    }
+
+    return {
+      hasSourceRecords: true,
+      matchedPointers,
+      availableFilters: finalizeAvailableFilters(availableFilterAccumulator),
+      summary: finalizeSummary(summaryAccumulator)
+    }
+  }
+
+  async _loadQuerySnapshot(snapshotId, filterSignature, client = redis.getClient()) {
+    if (!snapshotId || !client || typeof client.get !== 'function') {
+      return null
+    }
+
+    let rawSnapshot
+    try {
+      rawSnapshot = await client.get(`${REQUEST_DETAIL_QUERY_SNAPSHOT_PREFIX}${snapshotId}`)
+    } catch (error) {
+      logger.warn(`⚠️ Failed to read request detail query snapshot: ${error.message}`)
+      return null
+    }
+
+    const parsedSnapshot = safeJsonParse(rawSnapshot, 'request detail query snapshot')
+    if (
+      !parsedSnapshot ||
+      !requestDetailFilterSignaturesMatch(parsedSnapshot.filterSignature, filterSignature)
+    ) {
+      return null
+    }
+
+    if (typeof client.expire === 'function') {
+      try {
+        await client.expire(
+          `${REQUEST_DETAIL_QUERY_SNAPSHOT_PREFIX}${snapshotId}`,
+          REQUEST_DETAIL_QUERY_SNAPSHOT_TTL_SECONDS
+        )
+      } catch (error) {
+        logger.warn(`⚠️ Failed to renew request detail query snapshot TTL: ${error.message}`)
+      }
+    }
+
+    return {
+      snapshotId,
+      matchedPointers: inflateMatchedPointers(parsedSnapshot.matchedPointers),
+      availableFilters: parsedSnapshot.availableFilters || {
+        apiKeys: [],
+        accounts: [],
+        models: [],
+        endpoints: [],
+        dateRange: {
+          earliest: null,
+          latest: null
+        }
+      },
+      summary: parsedSnapshot.summary || finalizeSummary(createSummaryAccumulator()),
+      filters: parsedSnapshot.filters || null
+    }
+  }
+
+  async _storeQuerySnapshot(filterSignature, queryData, responseFilters, sortOrder) {
+    const client = redis.getClient()
+    if (!client || typeof client.set !== 'function') {
+      return null
+    }
+
+    if (queryData.matchedPointers.length > MAX_REQUEST_DETAIL_SNAPSHOT_POINTERS) {
+      return null
+    }
+
+    const snapshotPayload = {
+      filterSignature,
+      matchedPointers: flattenMatchedPointers(queryData.matchedPointers),
+      summary: queryData.summary,
+      availableFilters: queryData.availableFilters,
+      filters: responseFilters,
+      sortOrder,
+      createdAt: new Date().toISOString()
+    }
+
+    const serializedSnapshot = JSON.stringify(snapshotPayload)
+    if (Buffer.byteLength(serializedSnapshot, 'utf8') > MAX_REQUEST_DETAIL_SNAPSHOT_BYTES) {
+      return null
+    }
+
+    const snapshotId = makeRequestDetailQuerySnapshotId()
+    try {
+      await client.set(
+        `${REQUEST_DETAIL_QUERY_SNAPSHOT_PREFIX}${snapshotId}`,
+        serializedSnapshot,
+        'EX',
+        REQUEST_DETAIL_QUERY_SNAPSHOT_TTL_SECONDS
+      )
+    } catch (error) {
+      logger.warn(`⚠️ Failed to store request detail query snapshot: ${error.message}`)
+      return null
+    }
+
+    return snapshotId
+  }
+
+  async _buildListResponse({
+    settings,
+    responseFilters,
+    matchedPointers,
+    availableFilters,
+    summary,
+    page,
+    pageSize,
+    snapshotId = null
+  }) {
+    const pagination = this._paginateMatchedPointers(matchedPointers, page, pageSize)
+    const pageRecords = await this._buildPageRecords(pagination.pagePointers)
+
+    return {
+      captureEnabled: settings.captureEnabled,
+      retentionHours: settings.retentionHours,
+      bodyPreviewEnabled: settings.bodyPreviewEnabled,
+      snapshotId,
+      records: pageRecords,
+      pagination: {
+        currentPage: pagination.currentPage,
+        pageSize,
+        totalRecords: pagination.totalRecords,
+        totalPages: pagination.totalPages,
+        hasNextPage: pagination.totalPages > 0 && pagination.currentPage < pagination.totalPages,
+        hasPreviousPage: pagination.totalPages > 0 && pagination.currentPage > 1
+      },
+      filters: responseFilters,
+      availableFilters,
+      summary
+    }
+  }
+
   async listRequestDetails(filters = {}) {
+    filters = {
+      ...filters,
+      apiKeyId: normalizeOptionalFilterValue(filters.apiKeyId),
+      accountId: normalizeOptionalFilterValue(filters.accountId),
+      model: normalizeOptionalFilterValue(filters.model),
+      endpoint: normalizeOptionalFilterValue(filters.endpoint)
+    }
     const settings = await this.getSettings()
     const emptyResult = this._emptyListResult(settings, filters)
 
@@ -826,190 +1357,79 @@ class RequestDetailService {
     const page = Math.max(Number.parseInt(filters.page, 10) || 1, 1)
     const pageSize = Math.min(Math.max(Number.parseInt(filters.pageSize, 10) || 50, 1), 200)
     const sortOrder = filters.sortOrder === 'asc' ? 'asc' : 'desc'
+    const responseFilters = this._buildResponseFilters(
+      filters,
+      effectiveStart,
+      effectiveEnd,
+      sortOrder
+    )
+    const filterSignature = createRequestDetailFilterSignature(
+      filters,
+      {
+        startBoundary: createRequestDetailDateBoundarySignature(
+          'start',
+          filters.startDate,
+          effectiveStart,
+          retentionStart
+        ),
+        endBoundary: createRequestDetailDateBoundarySignature(
+          'end',
+          filters.endDate,
+          effectiveEnd,
+          now
+        )
+      },
+      settings.retentionHours
+    )
 
-    const requestPointers = await this._loadRequestPointersInRange(effectiveStart, effectiveEnd)
-    if (requestPointers.length === 0) {
+    const snapshot = await this._loadQuerySnapshot(filters.snapshotId, filterSignature)
+    if (snapshot) {
+      return this._buildListResponse({
+        settings,
+        responseFilters: snapshot.filters || responseFilters,
+        matchedPointers: snapshot.matchedPointers,
+        availableFilters: snapshot.availableFilters,
+        summary: snapshot.summary,
+        page,
+        pageSize,
+        snapshotId: snapshot.snapshotId
+      })
+    }
+
+    const queryData = await this._buildListQueryData(
+      filters,
+      effectiveStart,
+      effectiveEnd,
+      sortOrder
+    )
+    if (!queryData.hasSourceRecords) {
       return {
         ...emptyResult,
         captureEnabled: settings.captureEnabled,
         retentionHours: settings.retentionHours,
         bodyPreviewEnabled: settings.bodyPreviewEnabled,
-        filters: {
-          ...emptyResult.filters,
-          startDate: effectiveStart.toISOString(),
-          endDate: effectiveEnd.toISOString(),
-          hasCustomDateRange: Boolean(filters.startDate || filters.endDate)
-        }
+        snapshotId: null,
+        filters: responseFilters
       }
     }
 
-    requestPointers.sort((a, b) =>
-      sortOrder === 'asc' ? a.timestampMs - b.timestampMs : b.timestampMs - a.timestampMs
+    const snapshotId = await this._storeQuerySnapshot(
+      filterSignature,
+      queryData,
+      responseFilters,
+      sortOrder
     )
 
-    const availableFilterAccumulator = createAvailableFilterAccumulator()
-    const summaryAccumulator = createSummaryAccumulator()
-    const client = redis.getClient()
-    const requestedPageStart = (page - 1) * pageSize
-    const requestedPageEnd = requestedPageStart + pageSize
-    const pageRecords = []
-    let totalRecords = 0
-
-    const hasKeyword = Boolean(filters.keyword?.trim())
-
-    if (hasKeyword) {
-      // keyword 搜索需要 enriched 字段（apiKeyName, accountName），走全量 enrichment 路径
-      const apiKeyCache = new Map()
-      const accountCache = new Map()
-
-      for (
-        let startIndex = 0;
-        startIndex < requestPointers.length;
-        startIndex += REQUEST_DETAIL_QUERY_BATCH_SIZE
-      ) {
-        const pointerBatch = requestPointers.slice(
-          startIndex,
-          startIndex + REQUEST_DETAIL_QUERY_BATCH_SIZE
-        )
-        const itemKeys = pointerBatch.map(
-          ({ requestId }) => `${REQUEST_DETAIL_ITEM_PREFIX}${requestId}`
-        )
-        const rawItems = await client.mget(itemKeys)
-        const parsedBatch = rawItems
-          .map((rawItem, index) =>
-            restoreRecordTimestamp(safeJsonParse(rawItem), pointerBatch[index].timestampMs)
-          )
-          .filter(Boolean)
-
-        const enrichedBatch = await this._enrichRecords(parsedBatch, apiKeyCache, accountCache)
-
-        for (const record of enrichedBatch) {
-          updateAvailableFilterAccumulator(availableFilterAccumulator, record)
-
-          if (filters.apiKeyId && record.apiKeyId !== filters.apiKeyId) {
-            continue
-          }
-          if (filters.accountId && record.accountId !== filters.accountId) {
-            continue
-          }
-          if (filters.model && record.model !== filters.model) {
-            continue
-          }
-          if (filters.endpoint && record.endpoint !== filters.endpoint) {
-            continue
-          }
-          if (!this._matchesKeyword(record, filters.keyword)) {
-            continue
-          }
-
-          updateSummaryAccumulator(summaryAccumulator, record)
-
-          if (totalRecords >= requestedPageStart && totalRecords < requestedPageEnd) {
-            pageRecords.push({
-              ...record,
-              requestBodySnapshot: undefined
-            })
-          }
-
-          totalRecords += 1
-        }
-      }
-    } else {
-      // 无 keyword：延迟 enrichment，只对当前页记录做 enrichment
-      const pageRawRecords = []
-
-      for (
-        let startIndex = 0;
-        startIndex < requestPointers.length;
-        startIndex += REQUEST_DETAIL_QUERY_BATCH_SIZE
-      ) {
-        const pointerBatch = requestPointers.slice(
-          startIndex,
-          startIndex + REQUEST_DETAIL_QUERY_BATCH_SIZE
-        )
-        const itemKeys = pointerBatch.map(
-          ({ requestId }) => `${REQUEST_DETAIL_ITEM_PREFIX}${requestId}`
-        )
-        const rawItems = await client.mget(itemKeys)
-        const parsedBatch = rawItems
-          .map((rawItem, index) =>
-            restoreRecordTimestamp(safeJsonParse(rawItem), pointerBatch[index].timestampMs)
-          )
-          .filter(Boolean)
-
-        for (const record of parsedBatch) {
-          updateAvailableFilterAccumulatorRaw(availableFilterAccumulator, record)
-
-          if (filters.apiKeyId && record.apiKeyId !== filters.apiKeyId) {
-            continue
-          }
-          if (filters.accountId && record.accountId !== filters.accountId) {
-            continue
-          }
-          if (filters.model && record.model !== filters.model) {
-            continue
-          }
-          if (filters.endpoint && record.endpoint !== filters.endpoint) {
-            continue
-          }
-
-          updateSummaryAccumulator(summaryAccumulator, record)
-
-          if (totalRecords >= requestedPageStart && totalRecords < requestedPageEnd) {
-            pageRawRecords.push(record)
-          }
-
-          totalRecords += 1
-        }
-      }
-
-      const enrichedPageRecords = await this._enrichRecords(pageRawRecords)
-      for (const record of enrichedPageRecords) {
-        pageRecords.push({
-          ...record,
-          requestBodySnapshot: undefined
-        })
-      }
-
-      await this._resolveFilterDisplayNames(availableFilterAccumulator)
-    }
-
-    const totalPages = totalRecords > 0 ? Math.ceil(totalRecords / pageSize) : 0
-    if (totalPages > 0 && page > totalPages) {
-      return this.listRequestDetails({
-        ...filters,
-        page: totalPages,
-        pageSize
-      })
-    }
-
-    return {
-      captureEnabled: settings.captureEnabled,
-      retentionHours: settings.retentionHours,
-      bodyPreviewEnabled: settings.bodyPreviewEnabled,
-      records: pageRecords,
-      pagination: {
-        currentPage: totalPages > 0 ? Math.min(page, totalPages) : 1,
-        pageSize,
-        totalRecords,
-        totalPages,
-        hasNextPage: totalPages > 0 && page < totalPages,
-        hasPreviousPage: totalPages > 0 && page > 1
-      },
-      filters: {
-        startDate: effectiveStart.toISOString(),
-        endDate: effectiveEnd.toISOString(),
-        keyword: filters.keyword || null,
-        apiKeyId: filters.apiKeyId || null,
-        accountId: filters.accountId || null,
-        model: filters.model || null,
-        endpoint: filters.endpoint || null,
-        hasCustomDateRange: Boolean(filters.startDate || filters.endDate),
-        sortOrder
-      },
-      availableFilters: finalizeAvailableFilters(availableFilterAccumulator),
-      summary: finalizeSummary(summaryAccumulator)
-    }
+    return this._buildListResponse({
+      settings,
+      responseFilters,
+      matchedPointers: queryData.matchedPointers,
+      availableFilters: queryData.availableFilters,
+      summary: queryData.summary,
+      page,
+      pageSize,
+      snapshotId
+    })
   }
 
   async getRequestDetail(requestId) {

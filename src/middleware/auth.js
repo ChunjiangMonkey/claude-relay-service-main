@@ -1316,7 +1316,10 @@ const authenticateApiKey = async (req, res, next) => {
       dailyCostLimit: validation.keyData.dailyCostLimit,
       dailyCost: validation.keyData.dailyCost,
       totalCostLimit: validation.keyData.totalCostLimit,
-      totalCost: validation.keyData.totalCost
+      totalCost: validation.keyData.totalCost,
+      enableOpenAIResponsesCodexAdaptation: validation.keyData.enableOpenAIResponsesCodexAdaptation,
+      enableOpenAIResponsesPayloadRules: validation.keyData.enableOpenAIResponsesPayloadRules,
+      openaiResponsesPayloadRules: validation.keyData.openaiResponsesPayloadRules
     }
 
     const authDuration = Date.now() - startTime
