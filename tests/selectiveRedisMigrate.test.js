@@ -64,6 +64,9 @@ class FakeRedis {
   }
 
   async hgetall(key) {
+    if (this.sets.has(key) || this.strings.has(key) || this.zsets.has(key)) {
+      throw new Error('WRONGTYPE Operation against a key holding the wrong kind of value')
+    }
     return { ...(this.hashes.get(key) || {}) }
   }
 
@@ -86,6 +89,22 @@ class FakeRedis {
 
   async ttl(key) {
     return this.ttls.has(key) ? this.ttls.get(key) : -1
+  }
+
+  async type(key) {
+    if (this.hashes.has(key)) {
+      return 'hash'
+    }
+    if (this.strings.has(key)) {
+      return 'string'
+    }
+    if (this.sets.has(key)) {
+      return 'set'
+    }
+    if (this.zsets.has(key)) {
+      return 'zset'
+    }
+    return 'none'
   }
 
   async expire(key, seconds) {
@@ -197,6 +216,10 @@ describe('selective Redis migration', () => {
           accountType: 'shared',
           isActive: 'true'
         }
+      },
+      sets: {
+        'openai:account:index': ['oa-bound'],
+        'apikey:idx:all': ['key-neu']
       }
     })
 

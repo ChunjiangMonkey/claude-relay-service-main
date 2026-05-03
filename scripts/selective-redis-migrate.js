@@ -105,6 +105,13 @@ async function readHashRecords(client, keys, prefix) {
   const records = []
 
   for (const key of keys.sort()) {
+    if (typeof client.type === 'function') {
+      const type = await client.type(key)
+      if (type !== 'hash') {
+        continue
+      }
+    }
+
     const data = await client.hgetall(key)
     if (!data || Object.keys(data).length === 0) {
       continue
