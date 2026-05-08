@@ -11,6 +11,104 @@ const OPENAI_ACCOUNT_PREFIX = 'openai:account:'
 const OPENAI_ACCOUNT_INDEX = 'openai:account:index'
 const SHARED_OPENAI_ACCOUNTS = 'shared_openai_accounts'
 const API_KEY_HASH_MAP = 'apikey:hash_map'
+const ACCOUNT_GROUPS_KEY = 'account_groups'
+const ACCOUNT_GROUP_PREFIX = 'account_group:'
+const ACCOUNT_GROUP_MEMBERS_PREFIX = 'account_group_members:'
+const ACCOUNT_GROUPS_REVERSE_PREFIX = 'account_groups_reverse:'
+
+const ACCOUNT_DEFINITIONS = [
+  {
+    kind: 'claude',
+    label: 'Claude',
+    prefix: 'claude:account:',
+    index: 'claude:account:index',
+    storage: 'hash',
+    groupPlatform: 'claude'
+  },
+  {
+    kind: 'claude-console',
+    label: 'Claude Console',
+    prefix: 'claude_console_account:',
+    index: 'claude_console_account:index',
+    storage: 'hash',
+    sharedSet: 'shared_claude_console_accounts',
+    groupPlatform: 'claude'
+  },
+  {
+    kind: 'openai',
+    label: 'OpenAI',
+    prefix: OPENAI_ACCOUNT_PREFIX,
+    index: OPENAI_ACCOUNT_INDEX,
+    storage: 'hash',
+    sharedSet: SHARED_OPENAI_ACCOUNTS,
+    groupPlatform: 'openai'
+  },
+  {
+    kind: 'openai-responses',
+    label: 'OpenAI Responses',
+    prefix: 'openai_responses_account:',
+    index: 'openai_responses_account:index',
+    storage: 'hash',
+    sharedSet: 'shared_openai_responses_accounts',
+    groupPlatform: 'openai'
+  },
+  {
+    kind: 'azure-openai',
+    label: 'Azure OpenAI',
+    prefix: 'azure_openai:account:',
+    index: 'azure_openai:account:index',
+    storage: 'hash',
+    sharedSet: 'shared_azure_openai_accounts',
+    groupPlatform: 'openai'
+  },
+  {
+    kind: 'gemini',
+    label: 'Gemini',
+    prefix: 'gemini_account:',
+    index: 'gemini_account:index',
+    storage: 'hash',
+    sharedSet: 'shared_gemini_accounts',
+    groupPlatform: 'gemini'
+  },
+  {
+    kind: 'gemini-api',
+    label: 'Gemini API',
+    prefix: 'gemini_api_account:',
+    index: 'gemini_api_account:index',
+    storage: 'hash',
+    sharedSet: 'shared_gemini_api_accounts',
+    groupPlatform: 'gemini'
+  },
+  {
+    kind: 'bedrock',
+    label: 'Bedrock',
+    prefix: 'bedrock_account:',
+    index: 'bedrock_account:index',
+    storage: 'string',
+    groupPlatform: 'openai'
+  },
+  {
+    kind: 'droid',
+    label: 'Droid',
+    prefix: 'droid:account:',
+    index: 'droid:account:index',
+    storage: 'hash',
+    groupPlatform: 'droid'
+  },
+  {
+    kind: 'ccr',
+    label: 'CCR',
+    prefix: 'ccr_account:',
+    index: 'ccr_account:index',
+    storage: 'hash',
+    sharedSet: 'shared_ccr_accounts',
+    groupPlatform: 'claude'
+  }
+]
+
+const ACCOUNT_DEFINITION_BY_KIND = new Map(
+  ACCOUNT_DEFINITIONS.map((definition) => [definition.kind, definition])
+)
 
 function parseArgs(argv) {
   const [command, ...rest] = argv
@@ -37,6 +135,38 @@ function normalizeText(value) {
   return String(value || '')
     .trim()
     .toLowerCase()
+}
+
+function parseListParam(value) {
+  if (!value) {
+    return []
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean)
+  }
+
+  return String(value)
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function safeParseJsonObject(value) {
+  if (!value || typeof value !== 'string') {
+    return null
+  }
+
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function uniqueSorted(values) {
+  return [...new Set(values.filter(Boolean))].sort()
 }
 
 function parseJsonArray(value) {
@@ -129,6 +259,37 @@ async function readHashRecords(client, keys, prefix) {
   return records
 }
 
+async function readStringRecords(client, keys, prefix) {
+  const records = []
+
+  for (const key of keys.sort()) {
+    if (typeof client.type === 'function') {
+      const type = await client.type(key)
+      if (type !== 'string') {
+        continue
+      }
+    }
+
+    const value = await client.get(key)
+    if (!value) {
+      continue
+    }
+
+    const parsed = safeParseJsonObject(value)
+    const id = key.slice(prefix.length)
+    const ttl = typeof client.ttl === 'function' ? await client.ttl(key) : -1
+    records.push({
+      id,
+      key,
+      ttl,
+      value,
+      data: parsed ? { ...parsed, id: parsed.id || id } : { id }
+    })
+  }
+
+  return records
+}
+
 async function loadApiKeys(client) {
   const keys = (await scanKeys(client, 'apikey:*')).filter(isApiKeyDataKey)
   return readHashRecords(client, keys, 'apikey:')
@@ -137,6 +298,27 @@ async function loadApiKeys(client) {
 async function loadOpenAIAccounts(client) {
   const keys = await scanKeys(client, `${OPENAI_ACCOUNT_PREFIX}*`)
   return readHashRecords(client, keys, OPENAI_ACCOUNT_PREFIX)
+}
+
+async function loadAccountRecords(client, definition) {
+  const keys = await scanKeys(client, `${definition.prefix}*`)
+  const records =
+    definition.storage === 'string'
+      ? await readStringRecords(client, keys, definition.prefix)
+      : await readHashRecords(client, keys, definition.prefix)
+
+  return records.map((record) => ({
+    ...record,
+    kind: definition.kind,
+    storage: definition.storage
+  }))
+}
+
+async function loadAllAccountRecords(client) {
+  const accountGroups = await Promise.all(
+    ACCOUNT_DEFINITIONS.map((definition) => loadAccountRecords(client, definition))
+  )
+  return accountGroups.flat()
 }
 
 function encryptionKeyFingerprint(runtimeConfig = config) {
@@ -149,6 +331,46 @@ function encryptionKeyFingerprint(runtimeConfig = config) {
 
 function apiKeyPrefix(runtimeConfig = config) {
   return runtimeConfig.security?.apiKeyPrefix || 'cr_'
+}
+
+function accountDefinitionForKind(kind) {
+  const definition = ACCOUNT_DEFINITION_BY_KIND.get(kind)
+  if (!definition) {
+    throw new Error(`Unsupported account kind in migration package: ${kind}`)
+  }
+  return definition
+}
+
+function accountRecordData(record) {
+  return record.data || safeParseJsonObject(record.value) || {}
+}
+
+function accountRecordName(record) {
+  const data = accountRecordData(record)
+  return (
+    data.name ||
+    data.displayName ||
+    data.email ||
+    data.username ||
+    data.description ||
+    data.id ||
+    record.id ||
+    ''
+  )
+}
+
+function accountRecordRedisKey(record) {
+  const definition = accountDefinitionForKind(record.kind || 'openai')
+  return `${definition.prefix}${record.id}`
+}
+
+function accountRecordIsShared(record) {
+  const data = accountRecordData(record)
+  return data.accountType === true || data.accountType === 'shared'
+}
+
+function accountIdentity(kind, id) {
+  return `${kind}:${id}`
 }
 
 function decryptWithSalt(value, salt, runtimeConfig = config) {
@@ -208,6 +430,60 @@ function directOpenAIAccountId(binding) {
   }
 
   return binding
+}
+
+function parseGroupBinding(binding) {
+  if (!binding || typeof binding !== 'string' || !binding.startsWith('group:')) {
+    return null
+  }
+  return binding.slice('group:'.length)
+}
+
+function apiKeyAccountBindings(apiKeyData = {}) {
+  const bindings = []
+  const pushDirect = (field, kind, rawId) => {
+    if (!rawId || typeof rawId !== 'string') {
+      return
+    }
+
+    const groupId = parseGroupBinding(rawId)
+    if (groupId) {
+      bindings.push({ field, groupId, raw: rawId })
+      return
+    }
+
+    bindings.push({ field, kind, id: rawId, raw: rawId })
+  }
+
+  pushDirect('claudeAccountId', 'claude', apiKeyData.claudeAccountId)
+  pushDirect('claudeConsoleAccountId', 'claude-console', apiKeyData.claudeConsoleAccountId)
+
+  if (apiKeyData.geminiAccountId) {
+    if (apiKeyData.geminiAccountId.startsWith('api:')) {
+      pushDirect('geminiAccountId', 'gemini-api', apiKeyData.geminiAccountId.slice('api:'.length))
+    } else {
+      pushDirect('geminiAccountId', 'gemini', apiKeyData.geminiAccountId)
+    }
+  }
+
+  if (apiKeyData.openaiAccountId) {
+    if (apiKeyData.openaiAccountId.startsWith('responses:')) {
+      pushDirect(
+        'openaiAccountId',
+        'openai-responses',
+        apiKeyData.openaiAccountId.slice('responses:'.length)
+      )
+    } else {
+      pushDirect('openaiAccountId', 'openai', apiKeyData.openaiAccountId)
+    }
+  }
+
+  pushDirect('azureOpenaiAccountId', 'azure-openai', apiKeyData.azureOpenaiAccountId)
+  pushDirect('bedrockAccountId', 'bedrock', apiKeyData.bedrockAccountId)
+  pushDirect('droidAccountId', 'droid', apiKeyData.droidAccountId)
+  pushDirect('ccrAccountId', 'ccr', apiKeyData.ccrAccountId)
+
+  return bindings
 }
 
 function unsupportedBindingWarnings(apiKeyRecord) {
@@ -316,6 +592,215 @@ async function buildSourceSelection(client, options, runtimeConfig = config) {
   }
 }
 
+function isApiKeyExcludedForRemaining(apiKeyRecord, options) {
+  const excludeTags = parseListParam(options.excludeTag)
+  return excludeTags.some((tag) => hasTag(apiKeyRecord.data, tag))
+}
+
+function isAccountExcludedForRemaining(accountRecord, options, runtimeConfig = config) {
+  const excludeOpenAINames = parseListParam(options.excludeOpenAIName)
+  if (accountRecord.kind !== 'openai' || excludeOpenAINames.length === 0) {
+    return false
+  }
+
+  return excludeOpenAINames.some((keyword) =>
+    accountMatchesKeyword(accountRecord, keyword, runtimeConfig)
+  )
+}
+
+async function loadSelectedAccountGroups(client, selectedGroupIds, selectedAccountIds, warnings) {
+  const groups = []
+  const groupIds =
+    typeof client.smembers === 'function' ? await client.smembers(ACCOUNT_GROUPS_KEY) : []
+
+  for (const groupId of groupIds.sort()) {
+    const key = `${ACCOUNT_GROUP_PREFIX}${groupId}`
+    if (typeof client.type === 'function') {
+      const type = await client.type(key)
+      if (type !== 'hash') {
+        continue
+      }
+    }
+
+    const data = await client.hgetall(key)
+    if (!data || Object.keys(data).length === 0) {
+      if (selectedGroupIds.has(groupId)) {
+        warnings.push(`API Key binds missing account group ${groupId}`)
+      }
+      continue
+    }
+
+    const members =
+      typeof client.smembers === 'function'
+        ? await client.smembers(`${ACCOUNT_GROUP_MEMBERS_PREFIX}${groupId}`)
+        : []
+    const includeGroup =
+      selectedGroupIds.has(groupId) || members.some((memberId) => selectedAccountIds.has(memberId))
+
+    if (!includeGroup) {
+      continue
+    }
+
+    const ttl = typeof client.ttl === 'function' ? await client.ttl(key) : -1
+    groups.push({
+      id: groupId,
+      key,
+      ttl,
+      data: { ...data, id: data.id || groupId },
+      members: uniqueSorted(members),
+      reason: selectedGroupIds.has(groupId) ? 'bound_by_api_key' : 'contains_selected_account'
+    })
+  }
+
+  for (const groupId of selectedGroupIds) {
+    if (!groups.some((group) => group.id === groupId)) {
+      warnings.push(`API Key binds missing account group ${groupId}`)
+    }
+  }
+
+  return groups
+}
+
+async function loadAllAccountGroupRecords(client) {
+  const groups = []
+  const groupIds =
+    typeof client.smembers === 'function' ? await client.smembers(ACCOUNT_GROUPS_KEY) : []
+
+  for (const groupId of groupIds.sort()) {
+    const key = `${ACCOUNT_GROUP_PREFIX}${groupId}`
+    if (typeof client.type === 'function') {
+      const type = await client.type(key)
+      if (type !== 'hash') {
+        continue
+      }
+    }
+
+    const data = await client.hgetall(key)
+    if (!data || Object.keys(data).length === 0) {
+      continue
+    }
+
+    const members =
+      typeof client.smembers === 'function'
+        ? await client.smembers(`${ACCOUNT_GROUP_MEMBERS_PREFIX}${groupId}`)
+        : []
+    const ttl = typeof client.ttl === 'function' ? await client.ttl(key) : -1
+    groups.push({
+      id: groupId,
+      key,
+      ttl,
+      data: { ...data, id: data.id || groupId },
+      members: uniqueSorted(members)
+    })
+  }
+
+  return groups
+}
+
+async function buildRemainingSourceSelection(client, options = {}, runtimeConfig = config) {
+  const [allApiKeys, allAccounts] = await Promise.all([
+    loadApiKeys(client),
+    loadAllAccountRecords(client)
+  ])
+  const apiKeys = allApiKeys.filter((record) => !isApiKeyExcludedForRemaining(record, options))
+  const excludedApiKeys = allApiKeys.filter((record) =>
+    isApiKeyExcludedForRemaining(record, options)
+  )
+  const accounts = allAccounts.filter(
+    (record) => !isAccountExcludedForRemaining(record, options, runtimeConfig)
+  )
+  const excludedAccounts = allAccounts.filter((record) =>
+    isAccountExcludedForRemaining(record, options, runtimeConfig)
+  )
+  const allAccountByIdentity = new Map(
+    allAccounts.map((record) => [accountIdentity(record.kind, record.id), record])
+  )
+  const selectedAccountByIdentity = new Map(
+    accounts.map((record) => [accountIdentity(record.kind, record.id), record])
+  )
+  const selectedAccountIds = new Set(accounts.map((record) => record.id))
+  const selectedGroupIds = new Set()
+  const warnings = []
+
+  for (const apiKey of apiKeys) {
+    for (const binding of apiKeyAccountBindings(apiKey.data)) {
+      if (binding.groupId) {
+        selectedGroupIds.add(binding.groupId)
+        continue
+      }
+
+      const identity = accountIdentity(binding.kind, binding.id)
+      if (!allAccountByIdentity.has(identity)) {
+        warnings.push(
+          `API Key ${apiKey.data.name || apiKey.id} (${apiKey.id}) binds missing ${binding.kind} account ${binding.id}`
+        )
+      } else if (!selectedAccountByIdentity.has(identity)) {
+        warnings.push(
+          `API Key ${apiKey.data.name || apiKey.id} (${apiKey.id}) binds excluded ${binding.kind} account ${binding.id}; target must already contain it`
+        )
+      }
+    }
+  }
+
+  const accountGroups = await loadSelectedAccountGroups(
+    client,
+    selectedGroupIds,
+    selectedAccountIds,
+    warnings
+  )
+
+  return {
+    format: FORMAT,
+    version: VERSION,
+    createdAt: new Date().toISOString(),
+    source: {
+      mode: 'remaining',
+      excludeTags: parseListParam(options.excludeTag),
+      excludeOpenAINames: parseListParam(options.excludeOpenAIName),
+      excludedApiKeys: excludedApiKeys.length,
+      excludedAccounts: excludedAccounts.length,
+      encryptionKeyFingerprint: encryptionKeyFingerprint(runtimeConfig),
+      apiKeyPrefix: apiKeyPrefix(runtimeConfig)
+    },
+    records: {
+      apiKeys,
+      openAIAccounts: [],
+      accounts,
+      accountGroups
+    },
+    warnings
+  }
+}
+
+function migrationRecords(payload) {
+  const records = payload.records || {}
+  const apiKeys = Array.isArray(records.apiKeys) ? records.apiKeys : []
+  const openAIAccounts = Array.isArray(records.openAIAccounts) ? records.openAIAccounts : []
+  const accounts = Array.isArray(records.accounts) ? [...records.accounts] : []
+  const accountGroups = Array.isArray(records.accountGroups) ? records.accountGroups : []
+  const accountMap = new Map()
+
+  for (const record of openAIAccounts) {
+    accountMap.set(accountIdentity('openai', record.id), {
+      ...record,
+      kind: 'openai',
+      storage: 'hash'
+    })
+  }
+
+  for (const record of accounts) {
+    accountMap.set(accountIdentity(record.kind, record.id), record)
+  }
+
+  return {
+    apiKeys,
+    openAIAccounts,
+    accounts: [...accountMap.values()],
+    explicitAccounts: accounts,
+    accountGroups
+  }
+}
+
 function summarizeApiKey(record) {
   return {
     id: record.id,
@@ -338,20 +823,58 @@ function summarizeOpenAIAccount(record) {
   }
 }
 
+function summarizeAccount(record) {
+  const data = accountRecordData(record)
+  const definition = ACCOUNT_DEFINITION_BY_KIND.get(record.kind) || {}
+  return {
+    kind: record.kind,
+    id: record.id,
+    name: accountRecordName(record),
+    accountType: data.accountType || '',
+    isActive: data.isActive,
+    schedulable: data.schedulable,
+    storage: record.storage || definition.storage || 'hash'
+  }
+}
+
+function summarizeAccountGroup(record) {
+  return {
+    id: record.id,
+    name: record.data?.name || '',
+    platform: record.data?.platform || '',
+    members: record.members || [],
+    reason: record.reason || ''
+  }
+}
+
+function countAccountsByKind(records) {
+  return records.reduce((counts, record) => {
+    counts[record.kind] = (counts[record.kind] || 0) + 1
+    return counts
+  }, {})
+}
+
 function summarizePayload(payload) {
+  const records = migrationRecords(payload)
+
   return {
     format: payload.format,
     version: payload.version,
     createdAt: payload.createdAt,
     source: payload.source,
     counts: {
-      apiKeys: payload.records.apiKeys.length,
-      openAIAccounts: payload.records.openAIAccounts.length,
-      warnings: payload.warnings.length
+      apiKeys: records.apiKeys.length,
+      openAIAccounts: records.openAIAccounts.length,
+      accounts: records.explicitAccounts.length,
+      accountGroups: records.accountGroups.length,
+      accountKinds: countAccountsByKind(records.accounts),
+      warnings: (payload.warnings || []).length
     },
-    apiKeys: payload.records.apiKeys.map(summarizeApiKey),
-    openAIAccounts: payload.records.openAIAccounts.map(summarizeOpenAIAccount),
-    warnings: payload.warnings
+    apiKeys: records.apiKeys.map(summarizeApiKey),
+    openAIAccounts: records.openAIAccounts.map(summarizeOpenAIAccount),
+    accounts: records.explicitAccounts.map(summarizeAccount),
+    accountGroups: records.accountGroups.map(summarizeAccountGroup),
+    warnings: payload.warnings || []
   }
 }
 
@@ -422,29 +945,89 @@ function validatePayload(payload) {
     throw new Error('Unsupported migration payload')
   }
 
-  if (
-    !payload.records ||
-    !Array.isArray(payload.records.apiKeys) ||
-    !Array.isArray(payload.records.openAIAccounts)
-  ) {
+  if (!payload.records || !Array.isArray(payload.records.apiKeys)) {
     throw new Error('Migration payload is missing records')
+  }
+
+  if (payload.records.openAIAccounts && !Array.isArray(payload.records.openAIAccounts)) {
+    throw new Error('Migration payload openAIAccounts must be an array')
+  }
+
+  if (payload.records.accounts && !Array.isArray(payload.records.accounts)) {
+    throw new Error('Migration payload accounts must be an array')
+  }
+
+  if (payload.records.accountGroups && !Array.isArray(payload.records.accountGroups)) {
+    throw new Error('Migration payload accountGroups must be an array')
+  }
+
+  for (const record of payload.records.accounts || []) {
+    accountDefinitionForKind(record.kind)
   }
 }
 
 function ensurePayloadHasRecords(payload) {
-  if (payload.records.apiKeys.length === 0 && payload.records.openAIAccounts.length === 0) {
-    throw new Error('No matching API keys or OpenAI accounts found; run inspect-source first')
+  const records = migrationRecords(payload)
+  if (
+    records.apiKeys.length === 0 &&
+    records.accounts.length === 0 &&
+    records.accountGroups.length === 0
+  ) {
+    throw new Error('No matching API keys, accounts, or groups found; run inspect-source first')
   }
 }
 
 async function inspectTargetPayload(client, payload, runtimeConfig = config) {
   validatePayload(payload)
 
+  const records = migrationRecords(payload)
   const errors = []
   const warnings = [...(payload.warnings || [])]
-  const selectedOpenAIAccountIds = new Set(
-    payload.records.openAIAccounts.map((record) => record.id)
+  const selectedAccountIdentities = new Set(
+    records.accounts.map((record) => accountIdentity(record.kind, record.id))
   )
+  const selectedGroupIds = new Set(records.accountGroups.map((record) => record.id))
+  const targetApiKeys = await loadApiKeys(client)
+  const targetAccounts = await loadAllAccountRecords(client)
+  const targetGroups = await loadAllAccountGroupRecords(client)
+  const targetApiKeyNames = new Map()
+  const targetAccountNames = new Map()
+  const targetGroupNames = new Map()
+
+  for (const record of targetApiKeys) {
+    const name = normalizeText(record.data.name)
+    if (!name) {
+      continue
+    }
+    if (!targetApiKeyNames.has(name)) {
+      targetApiKeyNames.set(name, [])
+    }
+    targetApiKeyNames.get(name).push(record)
+  }
+
+  for (const record of targetAccounts) {
+    const name = normalizeText(accountRecordName(record))
+    if (!name) {
+      continue
+    }
+    const nameKey = `${record.kind}:${name}`
+    if (!targetAccountNames.has(nameKey)) {
+      targetAccountNames.set(nameKey, [])
+    }
+    targetAccountNames.get(nameKey).push(record)
+  }
+
+  for (const record of targetGroups) {
+    const name = normalizeText(record.data?.name)
+    if (!name) {
+      continue
+    }
+    const nameKey = `${record.data?.platform || ''}:${name}`
+    if (!targetGroupNames.has(nameKey)) {
+      targetGroupNames.set(nameKey, [])
+    }
+    targetGroupNames.get(nameKey).push(record)
+  }
 
   if (payload.source.encryptionKeyFingerprint !== encryptionKeyFingerprint(runtimeConfig)) {
     errors.push('Target ENCRYPTION_KEY fingerprint does not match source package')
@@ -456,10 +1039,19 @@ async function inspectTargetPayload(client, payload, runtimeConfig = config) {
     )
   }
 
-  for (const record of payload.records.apiKeys) {
+  for (const record of records.apiKeys) {
     const key = `apikey:${record.id}`
     if (await client.exists(key)) {
       errors.push(`Target already has API Key id ${record.id}`)
+    }
+
+    const sameNameKeys = targetApiKeyNames.get(normalizeText(record.data.name)) || []
+    for (const sameNameKey of sameNameKeys) {
+      if (sameNameKey.id !== record.id) {
+        warnings.push(
+          `Target already has API Key name "${record.data.name}" with different id ${sameNameKey.id}`
+        )
+      }
     }
 
     if (record.data.apiKey) {
@@ -471,22 +1063,64 @@ async function inspectTargetPayload(client, payload, runtimeConfig = config) {
       }
     }
 
-    const boundOpenAIAccountId = directOpenAIAccountId(record.data.openaiAccountId)
-    if (boundOpenAIAccountId && !selectedOpenAIAccountIds.has(boundOpenAIAccountId)) {
-      const targetHasAccount = await client.exists(
-        `${OPENAI_ACCOUNT_PREFIX}${boundOpenAIAccountId}`
-      )
-      if (!targetHasAccount) {
+    for (const binding of apiKeyAccountBindings(record.data)) {
+      if (binding.groupId) {
+        if (!selectedGroupIds.has(binding.groupId)) {
+          const targetHasGroup = await client.exists(`${ACCOUNT_GROUP_PREFIX}${binding.groupId}`)
+          if (!targetHasGroup) {
+            warnings.push(
+              `API Key ${record.data.name || record.id} binds account group ${binding.groupId}, but it is not in package or target`
+            )
+          }
+        }
+        continue
+      }
+
+      const identity = accountIdentity(binding.kind, binding.id)
+      if (!selectedAccountIdentities.has(identity)) {
+        const definition = accountDefinitionForKind(binding.kind)
+        const targetHasAccount = await client.exists(`${definition.prefix}${binding.id}`)
+        if (!targetHasAccount) {
+          warnings.push(
+            `API Key ${record.data.name || record.id} binds ${binding.kind} account ${binding.id}, but it is not in package or target`
+          )
+        }
+      }
+    }
+  }
+
+  for (const record of records.accounts) {
+    const definition = accountDefinitionForKind(record.kind)
+    if (await client.exists(`${definition.prefix}${record.id}`)) {
+      errors.push(`Target already has ${record.kind} account id ${record.id}`)
+    }
+
+    const name = accountRecordName(record)
+    const sameNameAccounts = targetAccountNames.get(`${record.kind}:${normalizeText(name)}`) || []
+    for (const sameNameAccount of sameNameAccounts) {
+      if (sameNameAccount.id !== record.id) {
         warnings.push(
-          `API Key ${record.data.name || record.id} binds OpenAI account ${boundOpenAIAccountId}, but it is not in package or target`
+          `Target already has ${record.kind} account name "${name}" with different id ${sameNameAccount.id}`
         )
       }
     }
   }
 
-  for (const record of payload.records.openAIAccounts) {
-    if (await client.exists(`${OPENAI_ACCOUNT_PREFIX}${record.id}`)) {
-      errors.push(`Target already has OpenAI account id ${record.id}`)
+  for (const record of records.accountGroups) {
+    const key = `${ACCOUNT_GROUP_PREFIX}${record.id}`
+    if (await client.exists(key)) {
+      errors.push(`Target already has account group id ${record.id}`)
+    }
+
+    const name = record.data?.name || ''
+    const nameKey = `${record.data?.platform || ''}:${normalizeText(name)}`
+    const sameNameGroups = targetGroupNames.get(nameKey) || []
+    for (const sameNameGroup of sameNameGroups) {
+      if (sameNameGroup.id !== record.id) {
+        warnings.push(
+          `Target already has ${record.data?.platform || ''} account group name "${name}" with different id ${sameNameGroup.id}`
+        )
+      }
     }
   }
 
@@ -495,8 +1129,11 @@ async function inspectTargetPayload(client, payload, runtimeConfig = config) {
     errors,
     warnings,
     counts: {
-      apiKeys: payload.records.apiKeys.length,
-      openAIAccounts: payload.records.openAIAccounts.length
+      apiKeys: records.apiKeys.length,
+      openAIAccounts: records.openAIAccounts.length,
+      accounts: records.explicitAccounts.length,
+      accountGroups: records.accountGroups.length,
+      accountKinds: countAccountsByKind(records.accounts)
     }
   }
 }
@@ -527,6 +1164,48 @@ function addApiKeyIndexWrites(pipeline, record) {
   }
 }
 
+function addAccountWrites(pipeline, record) {
+  const definition = accountDefinitionForKind(record.kind)
+  const key = `${definition.prefix}${record.id}`
+
+  if (definition.storage === 'string') {
+    const value = record.value || JSON.stringify(accountRecordData(record))
+    pipeline.set(key, value)
+  } else {
+    pipeline.hset(key, accountRecordData(record))
+  }
+
+  pipeline.sadd(definition.index, record.id)
+  pipeline.del(`${definition.index}:empty`)
+
+  if (definition.sharedSet && accountRecordIsShared(record)) {
+    pipeline.sadd(definition.sharedSet, record.id)
+  }
+
+  if (record.ttl > 0) {
+    pipeline.expire(key, record.ttl)
+  }
+}
+
+function addAccountGroupWrites(pipeline, record) {
+  pipeline.hset(`${ACCOUNT_GROUP_PREFIX}${record.id}`, record.data)
+  pipeline.sadd(ACCOUNT_GROUPS_KEY, record.id)
+
+  if (record.ttl > 0) {
+    pipeline.expire(`${ACCOUNT_GROUP_PREFIX}${record.id}`, record.ttl)
+  }
+
+  for (const memberId of record.members || []) {
+    pipeline.sadd(`${ACCOUNT_GROUP_MEMBERS_PREFIX}${record.id}`, memberId)
+    if (record.data?.platform) {
+      pipeline.sadd(
+        `${ACCOUNT_GROUPS_REVERSE_PREFIX}${record.data.platform}:${memberId}`,
+        record.id
+      )
+    }
+  }
+}
+
 async function importTargetPayload(client, payload, options = {}, runtimeConfig = config) {
   const assessment = await inspectTargetPayload(client, payload, runtimeConfig)
   if (!assessment.ok) {
@@ -537,21 +1216,18 @@ async function importTargetPayload(client, payload, options = {}, runtimeConfig 
     return { applied: false, assessment }
   }
 
+  const records = migrationRecords(payload)
   const pipeline = client.pipeline()
 
-  for (const record of payload.records.openAIAccounts) {
-    pipeline.hset(`${OPENAI_ACCOUNT_PREFIX}${record.id}`, record.data)
-    pipeline.sadd(OPENAI_ACCOUNT_INDEX, record.id)
-    pipeline.del(`${OPENAI_ACCOUNT_INDEX}:empty`)
-    if (record.data.accountType === 'shared') {
-      pipeline.sadd(SHARED_OPENAI_ACCOUNTS, record.id)
-    }
-    if (record.ttl > 0) {
-      pipeline.expire(`${OPENAI_ACCOUNT_PREFIX}${record.id}`, record.ttl)
-    }
+  for (const record of records.accounts) {
+    addAccountWrites(pipeline, record)
   }
 
-  for (const record of payload.records.apiKeys) {
+  for (const record of records.accountGroups) {
+    addAccountGroupWrites(pipeline, record)
+  }
+
+  for (const record of records.apiKeys) {
     pipeline.hset(`apikey:${record.id}`, record.data)
     if (record.data.apiKey) {
       pipeline.hset(API_KEY_HASH_MAP, record.data.apiKey, record.id)
@@ -568,8 +1244,10 @@ async function importTargetPayload(client, payload, options = {}, runtimeConfig 
     applied: true,
     assessment,
     imported: {
-      apiKeys: payload.records.apiKeys.length,
-      openAIAccounts: payload.records.openAIAccounts.length
+      apiKeys: records.apiKeys.length,
+      openAIAccounts: records.openAIAccounts.length,
+      accounts: records.explicitAccounts.length,
+      accountGroups: records.accountGroups.length
     }
   }
 }
@@ -577,16 +1255,18 @@ async function importTargetPayload(client, payload, options = {}, runtimeConfig 
 async function disableSourcePayload(client, payload, options = {}) {
   validatePayload(payload)
 
+  const records = migrationRecords(payload)
   const result = {
     applied: Boolean(options.apply),
     apiKeys: [],
     openAIAccounts: [],
+    accounts: [],
     warnings: []
   }
 
   const now = new Date().toISOString()
 
-  for (const record of payload.records.apiKeys) {
+  for (const record of records.apiKeys) {
     const key = `apikey:${record.id}`
     if (!(await client.exists(key))) {
       result.warnings.push(`Source missing API Key ${record.id}`)
@@ -595,13 +1275,17 @@ async function disableSourcePayload(client, payload, options = {}) {
     result.apiKeys.push({ id: record.id, name: record.data.name || '' })
   }
 
-  for (const record of payload.records.openAIAccounts) {
-    const key = `${OPENAI_ACCOUNT_PREFIX}${record.id}`
+  for (const record of records.accounts) {
+    const key = accountRecordRedisKey(record)
     if (!(await client.exists(key))) {
-      result.warnings.push(`Source missing OpenAI account ${record.id}`)
+      result.warnings.push(`Source missing ${record.kind} account ${record.id}`)
       continue
     }
-    result.openAIAccounts.push({ id: record.id, name: record.data.name || '' })
+    const summary = { kind: record.kind, id: record.id, name: accountRecordName(record) }
+    result.accounts.push(summary)
+    if (record.kind === 'openai' && records.openAIAccounts.some((item) => item.id === record.id)) {
+      result.openAIAccounts.push({ id: record.id, name: accountRecordName(record) })
+    }
   }
 
   if (!options.apply) {
@@ -615,8 +1299,28 @@ async function disableSourcePayload(client, payload, options = {}) {
       migrationDisabledAt: now
     })
   }
-  for (const record of result.openAIAccounts) {
-    pipeline.hset(`${OPENAI_ACCOUNT_PREFIX}${record.id}`, {
+  for (const record of result.accounts) {
+    const definition = accountDefinitionForKind(record.kind)
+    const key = `${definition.prefix}${record.id}`
+    if (definition.storage === 'string') {
+      const currentValue = await client.get(key)
+      const currentData = safeParseJsonObject(currentValue) || {}
+      pipeline.set(
+        key,
+        JSON.stringify({
+          ...currentData,
+          id: currentData.id || record.id,
+          isActive: false,
+          schedulable: false,
+          status: 'disabled',
+          updatedAt: now,
+          migrationDisabledAt: now
+        })
+      )
+      continue
+    }
+
+    pipeline.hset(key, {
       isActive: 'false',
       schedulable: 'false',
       status: 'disabled',
@@ -643,6 +1347,8 @@ Usage:
 Commands:
   inspect-source --tag=neu --openai-name=<keyword>
   export-source --tag=neu --openai-name=<keyword> --out=/tmp/neu-migration.json.enc
+  inspect-remaining-source --exclude-tag=neu --exclude-openai-name=<keyword>
+  export-remaining-source --exclude-tag=neu --exclude-openai-name=<keyword> --out=/tmp/b-remaining-migration.json.enc
   inspect-target --in=/tmp/neu-migration.json.enc
   import-target --in=/tmp/neu-migration.json.enc [--apply]
   disable-source --in=/tmp/neu-migration.json.enc [--apply]
@@ -692,6 +1398,38 @@ async function main(argv = process.argv.slice(2)) {
       buildSourceSelection(client, {
         tag: params.tag,
         openaiName: params['openai-name']
+      })
+    )
+    ensurePayloadHasRecords(payload)
+    await writeEncryptedPayload(params.out, payload, passphrase)
+    printJson({
+      exported: true,
+      out: params.out,
+      summary: summarizePayload(payload)
+    })
+    return
+  }
+
+  if (command === 'inspect-remaining-source') {
+    const payload = await withRedis((client) =>
+      buildRemainingSourceSelection(client, {
+        excludeTag: params['exclude-tag'],
+        excludeOpenAIName: params['exclude-openai-name']
+      })
+    )
+    printJson(summarizePayload(payload))
+    return
+  }
+
+  if (command === 'export-remaining-source') {
+    if (!params.out) {
+      throw new Error('Missing required --out')
+    }
+    const passphrase = requirePassphrase()
+    const payload = await withRedis((client) =>
+      buildRemainingSourceSelection(client, {
+        excludeTag: params['exclude-tag'],
+        excludeOpenAIName: params['exclude-openai-name']
       })
     )
     ensurePayloadHasRecords(payload)
@@ -761,6 +1499,7 @@ module.exports = {
   globToRegex,
   scanKeys,
   buildSourceSelection,
+  buildRemainingSourceSelection,
   summarizePayload,
   encryptPayload,
   decryptPackage,

@@ -17,6 +17,7 @@ jest.mock('../src/models/redis', () => ({
 
 const {
   buildSourceSelection,
+  buildRemainingSourceSelection,
   encryptPayload,
   decryptPackage,
   inspectTargetPayload,
@@ -72,6 +73,14 @@ class FakeRedis {
 
   async hget(key, field) {
     return this.hashes.get(key)?.[field] || null
+  }
+
+  async get(key) {
+    return this.strings.get(key) || null
+  }
+
+  async set(key, value) {
+    this.strings.set(key, value)
   }
 
   async hset(key, field, value) {
@@ -150,6 +159,10 @@ class FakeRedis {
     return {
       hset(key, field, value) {
         operations.push(() => client.hset(key, field, value))
+        return this
+      },
+      set(key, value) {
+        operations.push(() => client.set(key, value))
         return this
       },
       sadd(key, ...values) {
@@ -240,6 +253,100 @@ describe('selective Redis migration', () => {
     )
   })
 
+  test('selects remaining API keys, all remaining account types, and related groups', async () => {
+    const source = new FakeRedis({
+      hashes: {
+        'apikey:key-neu': {
+          id: 'key-neu',
+          name: 'Imported NEU key',
+          apiKey: 'hash-neu',
+          tags: JSON.stringify(['neu']),
+          isActive: 'true',
+          openaiAccountId: 'oa-neu'
+        },
+        'apikey:key-b': {
+          id: 'key-b',
+          name: 'B key',
+          apiKey: 'hash-b',
+          tags: JSON.stringify(['other']),
+          isActive: 'true',
+          openaiAccountId: 'oa-b'
+        },
+        'apikey:key-group': {
+          id: 'key-group',
+          name: 'Grouped key',
+          apiKey: 'hash-group',
+          tags: JSON.stringify([]),
+          isActive: 'true',
+          openaiAccountId: 'group:group-openai'
+        },
+        'openai:account:oa-neu': {
+          id: 'oa-neu',
+          name: 'neu-pro-01',
+          accountType: 'shared',
+          isActive: 'true'
+        },
+        'openai:account:oa-b': {
+          id: 'oa-b',
+          name: 'B ChatGPT',
+          accountType: 'shared',
+          isActive: 'true'
+        },
+        'claude:account:claude-b': {
+          id: 'claude-b',
+          name: 'B Claude',
+          accountType: 'shared',
+          isActive: 'true'
+        },
+        'gemini_api_account:gem-api-b': {
+          id: 'gem-api-b',
+          name: 'B Gemini API',
+          accountType: 'shared',
+          isActive: 'true'
+        },
+        'account_group:group-openai': {
+          id: 'group-openai',
+          name: 'B OpenAI Group',
+          platform: 'openai'
+        }
+      },
+      strings: {
+        'bedrock_account:bedrock-b': JSON.stringify({
+          id: 'bedrock-b',
+          name: 'B Bedrock',
+          accountType: 'shared',
+          isActive: true
+        })
+      },
+      sets: {
+        account_groups: ['group-openai'],
+        'account_group_members:group-openai': ['oa-b', 'oa-neu']
+      }
+    })
+
+    const payload = await buildRemainingSourceSelection(
+      source,
+      { excludeTag: 'neu', excludeOpenAIName: 'neu-pro-01' },
+      runtimeConfig
+    )
+
+    expect(payload.source.mode).toBe('remaining')
+    expect(payload.source.excludedApiKeys).toBe(1)
+    expect(payload.source.excludedAccounts).toBe(1)
+    expect(payload.records.apiKeys.map((record) => record.id).sort()).toEqual([
+      'key-b',
+      'key-group'
+    ])
+    expect(payload.records.accounts.map((record) => `${record.kind}:${record.id}`).sort()).toEqual([
+      'bedrock:bedrock-b',
+      'claude:claude-b',
+      'gemini-api:gem-api-b',
+      'openai:oa-b'
+    ])
+    expect(payload.records.accountGroups).toHaveLength(1)
+    expect(payload.records.accountGroups[0].members.sort()).toEqual(['oa-b', 'oa-neu'])
+  })
+
   test('encrypts and decrypts migration payloads', async () => {
     const payload = {
       format: 'claude-relay-selective-migration',
@@ -289,6 +396,61 @@ describe('selective Redis migration', () => {
     expect(assessment.ok).toBe(false)
     expect(assessment.errors).toContain(
       'Target API Key hash already maps to other-key, cannot import key-neu'
+    )
+  })
+
+  test('target inspection warns on same-name duplicates with different ids', async () => {
+    const target = new FakeRedis({
+      hashes: {
+        'apikey:existing-key': {
+          id: 'existing-key',
+          name: 'Duplicate name',
+          apiKey: 'hash-existing'
+        },
+        'openai:account:existing-account': {
+          id: 'existing-account',
+          name: 'Duplicate account',
+          accountType: 'shared',
+          isActive: 'true'
+        }
+      }
+    })
+    const payload = {
+      format: 'claude-relay-selective-migration',
+      version: 1,
+      source: {
+        encryptionKeyFingerprint: '989f1d36fd45e090',
+        apiKeyPrefix: 'cr_'
+      },
+      records: {
+        apiKeys: [
+          {
+            id: 'new-key',
+            data: { id: 'new-key', name: 'Duplicate name', apiKey: 'hash-new' },
+            ttl: -1
+          }
+        ],
+        openAIAccounts: [],
+        accounts: [
+          {
+            kind: 'openai',
+            id: 'new-account',
+            data: { id: 'new-account', name: 'Duplicate account', accountType: 'shared' },
+            ttl: -1
+          }
+        ]
+      },
+      warnings: []
+    }
+
+    const assessment = await inspectTargetPayload(target, payload, runtimeConfig)
+
+    expect(assessment.ok).toBe(true)
+    expect(assessment.warnings).toContain(
+      'Target already has API Key name "Duplicate name" with different id existing-key'
+    )
+    expect(assessment.warnings).toContain(
+      'Target already has openai account name "Duplicate account" with different id existing-account'
     )
   })
 
@@ -353,6 +515,88 @@ describe('selective Redis migration', () => {
     expect(await target.ttl('apikey:key-neu')).toBe(3600)
   })
 
+  test('imports generic account records and account groups', async () => {
+    const target = new FakeRedis()
+    const bedrockValue = JSON.stringify({
+      id: 'bedrock-b',
+      name: 'B Bedrock',
+      accountType: 'shared',
+      isActive: true
+    })
+    const payload = {
+      format: 'claude-relay-selective-migration',
+      version: 1,
+      source: {
+        encryptionKeyFingerprint: '989f1d36fd45e090',
+        apiKeyPrefix: 'cr_'
+      },
+      records: {
+        apiKeys: [
+          {
+            id: 'key-responses',
+            data: {
+              id: 'key-responses',
+              name: 'Responses key',
+              apiKey: 'hash-responses',
+              openaiAccountId: 'responses:responses-b',
+              bedrockAccountId: 'bedrock-b',
+              isActive: 'true'
+            },
+            ttl: -1
+          }
+        ],
+        openAIAccounts: [],
+        accounts: [
+          {
+            kind: 'openai-responses',
+            id: 'responses-b',
+            data: {
+              id: 'responses-b',
+              name: 'B Responses',
+              accountType: 'shared',
+              isActive: 'true'
+            },
+            ttl: -1
+          },
+          {
+            kind: 'bedrock',
+            id: 'bedrock-b',
+            storage: 'string',
+            value: bedrockValue,
+            data: JSON.parse(bedrockValue),
+            ttl: -1
+          }
+        ],
+        accountGroups: [
+          {
+            id: 'group-openai',
+            data: { id: 'group-openai', name: 'OpenAI group', platform: 'openai' },
+            members: ['responses-b', 'bedrock-b'],
+            ttl: -1
+          }
+        ]
+      },
+      warnings: []
+    }
+
+    const result = await importTargetPayload(target, payload, { apply: true }, runtimeConfig)
+
+    expect(result.applied).toBe(true)
+    expect((await target.hgetall('openai_responses_account:responses-b')).name).toBe('B Responses')
+    expect(await target.smembers('shared_openai_responses_accounts')).toEqual(['responses-b'])
+    expect(JSON.parse(await target.get('bedrock_account:bedrock-b')).name).toBe('B Bedrock')
+    expect(await target.smembers('bedrock_account:index')).toEqual(['bedrock-b'])
+    expect(await target.smembers('account_groups')).toEqual(['group-openai'])
+    expect((await target.hgetall('account_group:group-openai')).platform).toBe('openai')
+    expect((await target.smembers('account_group_members:group-openai')).sort()).toEqual([
+      'bedrock-b',
+      'responses-b'
+    ])
+    expect(await target.smembers('account_groups_reverse:openai:responses-b')).toEqual([
+      'group-openai'
+    ])
+  })
+
   test('disable source is dry-run by default and disables only with apply', async () => {
     const source = new FakeRedis({
       hashes: {
@@ -368,6 +612,15 @@ describe('selective Redis migration', () => {
           schedulable: 'true',
           status: 'active'
         }
+      },
+      strings: {
+        'bedrock_account:bedrock-b': JSON.stringify({
+          id: 'bedrock-b',
+          name: 'B Bedrock',
+          isActive: true,
+          schedulable: true,
+          status: 'active'
+        })
       }
     })
     const payload = {
@@ -375,7 +628,15 @@ describe('selective Redis migration', () => {
       version: 1,
       records: {
         apiKeys: [{ id: 'key-neu', data: { name: 'NEU key' } }],
-        openAIAccounts: [{ id: 'oa-bound', data: { name: 'Production ChatGPT account' } }]
+        openAIAccounts: [{ id: 'oa-bound', data: { name: 'Production ChatGPT account' } }],
+        accounts: [
+          {
+            kind: 'bedrock',
+            id: 'bedrock-b',
+            storage: 'string',
+            data: { name: 'B Bedrock' }
+          }
+        ]
       },
       warnings: []
     }
@@ -389,5 +650,7 @@ describe('selective Redis migration', () => {
     expect((await source.hgetall('apikey:key-neu')).isActive).toBe('false')
     expect((await source.hgetall('openai:account:oa-bound')).schedulable).toBe('false')
     expect((await source.hgetall('openai:account:oa-bound')).status).toBe('disabled')
+    expect(JSON.parse(await source.get('bedrock_account:bedrock-b')).isActive).toBe(false)
+    expect(JSON.parse(await source.get('bedrock_account:bedrock-b')).status).toBe('disabled')
   })
 })
