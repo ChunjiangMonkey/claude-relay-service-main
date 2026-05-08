@@ -454,6 +454,107 @@ describe('selective Redis migration', () => {
     )
   })
 
+  test('import skips existing same-id records by default and imports only missing records', async () => {
+    const target = new FakeRedis({
+      hashes: {
+        'apikey:key-existing': {
+          id: 'key-existing',
+          name: 'Target existing key',
+          apiKey: 'hash-existing'
+        },
+        'apikey:hash_map': {
+          'hash-existing': 'key-existing'
+        },
+        'openai:account:oa-existing': {
+          id: 'oa-existing',
+          name: 'Target existing OpenAI',
+          accountType: 'shared'
+        },
+        'account_group:group-existing': {
+          id: 'group-existing',
+          name: 'Target group',
+          platform: 'openai'
+        }
+      },
+      sets: {
+        account_groups: ['group-existing'],
+        'account_group_members:group-existing': ['oa-existing']
+      }
+    })
+    const payload = {
+      format: 'claude-relay-selective-migration',
+      version: 1,
+      source: {
+        encryptionKeyFingerprint: '989f1d36fd45e090',
+        apiKeyPrefix: 'cr_'
+      },
+      records: {
+        apiKeys: [
+          {
+            id: 'key-existing',
+            data: { id: 'key-existing', name: 'Package existing key', apiKey: 'hash-existing' },
+            ttl: -1
+          },
+          {
+            id: 'key-new',
+            data: { id: 'key-new', name: 'Package new key', apiKey: 'hash-new' },
+            ttl: -1
+          }
+        ],
+        openAIAccounts: [],
+        accounts: [
+          {
+            kind: 'openai',
+            id: 'oa-existing',
+            data: { id: 'oa-existing', name: 'Package existing OpenAI', accountType: 'shared' },
+            ttl: -1
+          },
+          {
+            kind: 'openai',
+            id: 'oa-new',
+            data: { id: 'oa-new', name: 'Package new OpenAI', accountType: 'shared' },
+            ttl: -1
+          }
+        ],
+        accountGroups: [
+          {
+            id: 'group-existing',
+            data: { id: 'group-existing', name: 'Package group', platform: 'openai' },
+            members: ['oa-existing', 'oa-new'],
+            ttl: -1
+          }
+        ]
+      },
+      warnings: []
+    }
+
+    const result = await importTargetPayload(target, payload, { apply: true }, runtimeConfig)
+
+    expect(result.applied).toBe(true)
+    expect(result.assessment.ok).toBe(true)
+    expect(result.skipped.apiKeys.map((record) => record.id)).toEqual(['key-existing'])
+    expect(result.skipped.accounts.map((record) => record.id)).toEqual(['oa-existing'])
+    expect(result.skipped.accountGroups.map((record) => record.id)).toEqual(['group-existing'])
+    expect(result.imported).toMatchObject({
+      apiKeys: 1,
+      accounts: 1,
+      accountGroups: 0,
+      mergedAccountGroups: 1
+    })
+    expect((await target.hgetall('apikey:key-existing')).name).toBe('Target existing key')
+    expect((await target.hgetall('apikey:key-new')).name).toBe('Package new key')
+    expect((await target.hgetall('openai:account:oa-existing')).name).toBe('Target existing OpenAI')
+    expect((await target.hgetall('openai:account:oa-new')).name).toBe('Package new OpenAI')
+    expect((await target.hgetall('account_group:group-existing')).name).toBe('Target group')
+    expect((await target.smembers('account_group_members:group-existing')).sort()).toEqual([
+      'oa-existing',
+      'oa-new'
+    ])
+    expect(await target.smembers('account_groups_reverse:openai:oa-new')).toEqual([
+      'group-existing'
+    ])
+  })
+
   test('imports API keys, hash map, indexes, and shared OpenAI account', async () => {
     const target = new FakeRedis({
       hashes: {

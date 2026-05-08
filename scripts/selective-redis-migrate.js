@@ -333,6 +333,14 @@ function apiKeyPrefix(runtimeConfig = config) {
   return runtimeConfig.security?.apiKeyPrefix || 'cr_'
 }
 
+function normalizeInspectInvocation(options = {}, runtimeConfig = config) {
+  if (options?.security && runtimeConfig === config) {
+    return { options: {}, runtimeConfig: options }
+  }
+
+  return { options: options || {}, runtimeConfig: runtimeConfig || config }
+}
+
 function accountDefinitionForKind(kind) {
   const definition = ACCOUNT_DEFINITION_BY_KIND.get(kind)
   if (!definition) {
@@ -977,12 +985,23 @@ function ensurePayloadHasRecords(payload) {
   }
 }
 
-async function inspectTargetPayload(client, payload, runtimeConfig = config) {
+async function inspectTargetPayload(client, payload, options = {}, runtimeConfig = config) {
+  const { options: normalizedOptions, runtimeConfig: normalizedRuntimeConfig } =
+    normalizeInspectInvocation(options, runtimeConfig)
+  options = normalizedOptions
+  runtimeConfig = normalizedRuntimeConfig
+
   validatePayload(payload)
 
   const records = migrationRecords(payload)
+  const skipExisting = options.skipExisting !== false
   const errors = []
   const warnings = [...(payload.warnings || [])]
+  const skipped = {
+    apiKeys: [],
+    accounts: [],
+    accountGroups: []
+  }
   const selectedAccountIdentities = new Set(
     records.accounts.map((record) => accountIdentity(record.kind, record.id))
   )
@@ -1041,7 +1060,14 @@ async function inspectTargetPayload(client, payload, runtimeConfig = config) {
 
   for (const record of records.apiKeys) {
     const key = `apikey:${record.id}`
-    if (await client.exists(key)) {
+    const targetHasApiKey = Boolean(await client.exists(key))
+    if (targetHasApiKey && skipExisting) {
+      skipped.apiKeys.push({
+        id: record.id,
+        name: record.data.name || '',
+        reason: 'existing_id'
+      })
+    } else if (targetHasApiKey) {
       errors.push(`Target already has API Key id ${record.id}`)
     }
 
@@ -1058,8 +1084,12 @@ async function inspectTargetPayload(client, payload, runtimeConfig = config) {
       const mappedId = await client.hget(API_KEY_HASH_MAP, record.data.apiKey)
       if (mappedId && mappedId !== record.id) {
         errors.push(`Target API Key hash already maps to ${mappedId}, cannot import ${record.id}`)
-      } else if (mappedId === record.id) {
+      } else if (mappedId === record.id && !skipExisting) {
         errors.push(`Target hash map already contains API Key id ${record.id}`)
+      } else if (mappedId === record.id && !targetHasApiKey) {
+        warnings.push(
+          `Target hash map already contains API Key id ${record.id}, but API Key hash is missing; import will recreate it`
+        )
       }
     }
 
@@ -1091,7 +1121,15 @@ async function inspectTargetPayload(client, payload, runtimeConfig = config) {
 
   for (const record of records.accounts) {
     const definition = accountDefinitionForKind(record.kind)
-    if (await client.exists(`${definition.prefix}${record.id}`)) {
+    const targetHasAccount = Boolean(await client.exists(`${definition.prefix}${record.id}`))
+    if (targetHasAccount && skipExisting) {
+      skipped.accounts.push({
+        kind: record.kind,
+        id: record.id,
+        name: accountRecordName(record),
+        reason: 'existing_id'
+      })
+    } else if (targetHasAccount) {
       errors.push(`Target already has ${record.kind} account id ${record.id}`)
     }
 
@@ -1108,7 +1146,33 @@ async function inspectTargetPayload(client, payload, runtimeConfig = config) {
 
   for (const record of records.accountGroups) {
     const key = `${ACCOUNT_GROUP_PREFIX}${record.id}`
-    if (await client.exists(key)) {
+    const targetHasGroup = Boolean(await client.exists(key))
+    if (targetHasGroup && skipExisting) {
+      skipped.accountGroups.push({
+        id: record.id,
+        name: record.data?.name || '',
+        platform: record.data?.platform || '',
+        reason: 'existing_id'
+      })
+      const existingGroup = await client.hgetall(key)
+      if (
+        existingGroup?.platform &&
+        record.data?.platform &&
+        existingGroup.platform !== record.data.platform
+      ) {
+        errors.push(
+          `Target account group id ${record.id} has platform ${existingGroup.platform}, package uses ${record.data.platform}`
+        )
+      } else if (
+        existingGroup?.name &&
+        record.data?.name &&
+        existingGroup.name !== record.data.name
+      ) {
+        warnings.push(
+          `Target account group id ${record.id} already exists with name "${existingGroup.name}", package name is "${record.data.name}"; metadata will not be overwritten`
+        )
+      }
+    } else if (targetHasGroup) {
       errors.push(`Target already has account group id ${record.id}`)
     }
 
@@ -1128,6 +1192,7 @@ async function inspectTargetPayload(client, payload, runtimeConfig = config) {
     ok: errors.length === 0,
     errors,
     warnings,
+    skipped,
     counts: {
       apiKeys: records.apiKeys.length,
       openAIAccounts: records.openAIAccounts.length,
@@ -1195,6 +1260,10 @@ function addAccountGroupWrites(pipeline, record) {
     pipeline.expire(`${ACCOUNT_GROUP_PREFIX}${record.id}`, record.ttl)
   }
 
+  addAccountGroupMemberWrites(pipeline, record)
+}
+
+function addAccountGroupMemberWrites(pipeline, record) {
   for (const memberId of record.members || []) {
     pipeline.sadd(`${ACCOUNT_GROUP_MEMBERS_PREFIX}${record.id}`, memberId)
     if (record.data?.platform) {
@@ -1207,7 +1276,7 @@ function addAccountGroupWrites(pipeline, record) {
 }
 
 async function importTargetPayload(client, payload, options = {}, runtimeConfig = config) {
-  const assessment = await inspectTargetPayload(client, payload, runtimeConfig)
+  const assessment = await inspectTargetPayload(client, payload, options, runtimeConfig)
   if (!assessment.ok) {
     return { applied: false, assessment }
   }
@@ -1217,17 +1286,45 @@ async function importTargetPayload(client, payload, options = {}, runtimeConfig 
   }
 
   const records = migrationRecords(payload)
+  const skippedApiKeyIds = new Set((assessment.skipped?.apiKeys || []).map((record) => record.id))
+  const skippedAccountIds = new Set(
+    (assessment.skipped?.accounts || []).map((record) => accountIdentity(record.kind, record.id))
+  )
+  const skippedGroupIds = new Set(
+    (assessment.skipped?.accountGroups || []).map((record) => record.id)
+  )
   const pipeline = client.pipeline()
+  let importedApiKeys = 0
+  let importedAccounts = 0
+  let importedOpenAIAccounts = 0
+  let importedAccountGroups = 0
+  let mergedAccountGroups = 0
 
   for (const record of records.accounts) {
+    if (skippedAccountIds.has(accountIdentity(record.kind, record.id))) {
+      continue
+    }
     addAccountWrites(pipeline, record)
+    importedAccounts += 1
+    if (record.kind === 'openai' && records.openAIAccounts.some((item) => item.id === record.id)) {
+      importedOpenAIAccounts += 1
+    }
   }
 
   for (const record of records.accountGroups) {
-    addAccountGroupWrites(pipeline, record)
+    if (skippedGroupIds.has(record.id)) {
+      addAccountGroupMemberWrites(pipeline, record)
+      mergedAccountGroups += 1
+    } else {
+      addAccountGroupWrites(pipeline, record)
+      importedAccountGroups += 1
+    }
   }
 
   for (const record of records.apiKeys) {
+    if (skippedApiKeyIds.has(record.id)) {
+      continue
+    }
     pipeline.hset(`apikey:${record.id}`, record.data)
     if (record.data.apiKey) {
       pipeline.hset(API_KEY_HASH_MAP, record.data.apiKey, record.id)
@@ -1236,6 +1333,7 @@ async function importTargetPayload(client, payload, options = {}, runtimeConfig 
       pipeline.expire(`apikey:${record.id}`, record.ttl)
     }
     addApiKeyIndexWrites(pipeline, record)
+    importedApiKeys += 1
   }
 
   await pipeline.exec()
@@ -1244,11 +1342,13 @@ async function importTargetPayload(client, payload, options = {}, runtimeConfig 
     applied: true,
     assessment,
     imported: {
-      apiKeys: records.apiKeys.length,
-      openAIAccounts: records.openAIAccounts.length,
-      accounts: records.explicitAccounts.length,
-      accountGroups: records.accountGroups.length
-    }
+      apiKeys: importedApiKeys,
+      openAIAccounts: importedOpenAIAccounts,
+      accounts: importedAccounts,
+      accountGroups: importedAccountGroups,
+      mergedAccountGroups
+    },
+    skipped: assessment.skipped
   }
 }
 
@@ -1349,9 +1449,13 @@ Commands:
   export-source --tag=neu --openai-name=<keyword> --out=/tmp/neu-migration.json.enc
   inspect-remaining-source --exclude-tag=neu --exclude-openai-name=<keyword>
   export-remaining-source --exclude-tag=neu --exclude-openai-name=<keyword> --out=/tmp/b-remaining-migration.json.enc
-  inspect-target --in=/tmp/neu-migration.json.enc
-  import-target --in=/tmp/neu-migration.json.enc [--apply]
+  inspect-target --in=/tmp/neu-migration.json.enc [--strict-conflicts]
+  import-target --in=/tmp/neu-migration.json.enc [--apply] [--strict-conflicts]
   disable-source --in=/tmp/neu-migration.json.enc [--apply]
+
+Default import behavior:
+  Existing same-ID API keys, accounts, and groups are skipped instead of overwritten.
+  Real conflicts, such as an API Key hash mapping to another ID, still fail the import.
 
 Environment:
   REDIS_HOST / REDIS_PORT / REDIS_PASSWORD / REDIS_DB
@@ -1447,7 +1551,9 @@ async function main(argv = process.argv.slice(2)) {
       throw new Error('Missing required --in')
     }
     const payload = await readMigrationPayload(params.in, requirePassphrase())
-    const assessment = await withRedis((client) => inspectTargetPayload(client, payload))
+    const assessment = await withRedis((client) =>
+      inspectTargetPayload(client, payload, { skipExisting: params['strict-conflicts'] !== true })
+    )
     printJson({ summary: summarizePayload(payload), assessment })
     return
   }
@@ -1458,7 +1564,10 @@ async function main(argv = process.argv.slice(2)) {
     }
     const payload = await readMigrationPayload(params.in, requirePassphrase())
     const result = await withRedis((client) =>
-      importTargetPayload(client, payload, { apply: params.apply === true })
+      importTargetPayload(client, payload, {
+        apply: params.apply === true,
+        skipExisting: params['strict-conflicts'] !== true
+      })
     )
     printJson(result)
     if (!result.assessment.ok) {
