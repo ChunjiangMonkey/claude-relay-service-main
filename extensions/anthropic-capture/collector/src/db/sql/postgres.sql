@@ -43,7 +43,7 @@ CREATE INDEX IF NOT EXISTS idx_anthropic_relay_key ON anthropic_interactions(rel
 CREATE TABLE IF NOT EXISTS collector_offsets (
   file_path TEXT PRIMARY KEY,
   inode TEXT,
-  offset BIGINT NOT NULL,
+  "offset" BIGINT NOT NULL,
   remainder TEXT,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

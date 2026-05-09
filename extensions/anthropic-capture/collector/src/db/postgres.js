@@ -51,7 +51,7 @@ function createPostgresAdapter(config) {
 
   async function loadOffsets() {
     const result = await pool.query(
-      'SELECT file_path, inode, offset, remainder FROM collector_offsets'
+      'SELECT file_path, inode, "offset", remainder FROM collector_offsets'
     )
     return result.rows
   }
@@ -465,11 +465,11 @@ function createPostgresAdapter(config) {
   async function persistOffset(record) {
     await pool.query(
       `
-      INSERT INTO collector_offsets (file_path, inode, offset, remainder, updated_at)
+      INSERT INTO collector_offsets (file_path, inode, "offset", remainder, updated_at)
       VALUES ($1, $2, $3, $4, NOW())
       ON CONFLICT (file_path) DO UPDATE SET
         inode = EXCLUDED.inode,
-        offset = EXCLUDED.offset,
+        "offset" = EXCLUDED."offset",
         remainder = EXCLUDED.remainder,
         updated_at = NOW()
       `,
