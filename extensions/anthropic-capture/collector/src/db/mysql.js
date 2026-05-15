@@ -516,13 +516,33 @@ function createMysqlAdapter(config) {
         updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, 'request_captured', CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3))
       ON DUPLICATE KEY UPDATE
+        last_seen_at = IF(
+          (
+            COALESCE(VALUES(provider_kind), provider_kind) <=> provider_kind
+            AND COALESCE(VALUES(model), model) <=> model
+            AND COALESCE(VALUES(is_stream), is_stream) <=> is_stream
+            AND COALESCE(VALUES(request_json), request_json) <=> request_json
+            AND COALESCE(VALUES(relay_key_id), relay_key_id) <=> relay_key_id
+          ),
+          last_seen_at,
+          CURRENT_TIMESTAMP(3)
+        ),
+        updated_at = IF(
+          (
+            COALESCE(VALUES(provider_kind), provider_kind) <=> provider_kind
+            AND COALESCE(VALUES(model), model) <=> model
+            AND COALESCE(VALUES(is_stream), is_stream) <=> is_stream
+            AND COALESCE(VALUES(request_json), request_json) <=> request_json
+            AND COALESCE(VALUES(relay_key_id), relay_key_id) <=> relay_key_id
+          ),
+          updated_at,
+          CURRENT_TIMESTAMP(3)
+        ),
         provider_kind = COALESCE(VALUES(provider_kind), provider_kind),
         model = COALESCE(VALUES(model), model),
         is_stream = COALESCE(VALUES(is_stream), is_stream),
         request_json = COALESCE(VALUES(request_json), request_json),
-        relay_key_id = COALESCE(VALUES(relay_key_id), relay_key_id),
-        last_seen_at = CURRENT_TIMESTAMP(3),
-        updated_at = CURRENT_TIMESTAMP(3)
+        relay_key_id = COALESCE(VALUES(relay_key_id), relay_key_id)
       `,
       [
         record.traceId,
@@ -586,6 +606,52 @@ function createMysqlAdapter(config) {
         CURRENT_TIMESTAMP(3)
       )
       ON DUPLICATE KEY UPDATE
+        last_seen_at = IF(
+          (
+            COALESCE(VALUES(provider_kind), provider_kind) <=> provider_kind
+            AND COALESCE(VALUES(model), model) <=> model
+            AND COALESCE(VALUES(is_stream), is_stream) <=> is_stream
+            AND COALESCE(VALUES(response_id), response_id) <=> response_id
+            AND COALESCE(VALUES(assistant_text_full), assistant_text_full) <=> assistant_text_full
+            AND COALESCE(VALUES(reasoning_text_full), reasoning_text_full) <=> reasoning_text_full
+            AND COALESCE(VALUES(tool_calls), tool_calls) <=> tool_calls
+            AND COALESCE(VALUES(usage_json), usage_json) <=> usage_json
+            AND COALESCE(VALUES(input_tokens), input_tokens) <=> input_tokens
+            AND COALESCE(VALUES(output_tokens), output_tokens) <=> output_tokens
+            AND COALESCE(VALUES(total_tokens), total_tokens) <=> total_tokens
+            AND COALESCE(VALUES(cached_tokens), cached_tokens) <=> cached_tokens
+            AND COALESCE(VALUES(reasoning_tokens), reasoning_tokens) <=> reasoning_tokens
+            AND COALESCE(VALUES(http_status), http_status) <=> http_status
+            AND COALESCE(VALUES(latency_ms), latency_ms) <=> latency_ms
+            AND COALESCE(VALUES(relay_key_id), relay_key_id) <=> relay_key_id
+            AND VALUES(status) <=> status
+          ),
+          last_seen_at,
+          CURRENT_TIMESTAMP(3)
+        ),
+        updated_at = IF(
+          (
+            COALESCE(VALUES(provider_kind), provider_kind) <=> provider_kind
+            AND COALESCE(VALUES(model), model) <=> model
+            AND COALESCE(VALUES(is_stream), is_stream) <=> is_stream
+            AND COALESCE(VALUES(response_id), response_id) <=> response_id
+            AND COALESCE(VALUES(assistant_text_full), assistant_text_full) <=> assistant_text_full
+            AND COALESCE(VALUES(reasoning_text_full), reasoning_text_full) <=> reasoning_text_full
+            AND COALESCE(VALUES(tool_calls), tool_calls) <=> tool_calls
+            AND COALESCE(VALUES(usage_json), usage_json) <=> usage_json
+            AND COALESCE(VALUES(input_tokens), input_tokens) <=> input_tokens
+            AND COALESCE(VALUES(output_tokens), output_tokens) <=> output_tokens
+            AND COALESCE(VALUES(total_tokens), total_tokens) <=> total_tokens
+            AND COALESCE(VALUES(cached_tokens), cached_tokens) <=> cached_tokens
+            AND COALESCE(VALUES(reasoning_tokens), reasoning_tokens) <=> reasoning_tokens
+            AND COALESCE(VALUES(http_status), http_status) <=> http_status
+            AND COALESCE(VALUES(latency_ms), latency_ms) <=> latency_ms
+            AND COALESCE(VALUES(relay_key_id), relay_key_id) <=> relay_key_id
+            AND VALUES(status) <=> status
+          ),
+          updated_at,
+          CURRENT_TIMESTAMP(3)
+        ),
         provider_kind = COALESCE(VALUES(provider_kind), provider_kind),
         model = COALESCE(VALUES(model), model),
         is_stream = COALESCE(VALUES(is_stream), is_stream),
@@ -602,9 +668,7 @@ function createMysqlAdapter(config) {
         http_status = COALESCE(VALUES(http_status), http_status),
         latency_ms = COALESCE(VALUES(latency_ms), latency_ms),
         relay_key_id = COALESCE(VALUES(relay_key_id), relay_key_id),
-        status = VALUES(status),
-        last_seen_at = CURRENT_TIMESTAMP(3),
-        updated_at = CURRENT_TIMESTAMP(3)
+        status = VALUES(status)
       `,
       [
         record.traceId,

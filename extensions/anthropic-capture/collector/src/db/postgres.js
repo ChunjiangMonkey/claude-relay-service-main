@@ -94,13 +94,33 @@ function createPostgresAdapter(config) {
         updated_at
       ) VALUES ($1, $2, $3, $4, $5::jsonb, $6, 'request_captured', NOW(), NOW(), NOW(), NOW())
       ON CONFLICT (trace_id) DO UPDATE SET
+        last_seen_at = CASE
+          WHEN (
+            COALESCE(EXCLUDED.upstream_request_id, anthropic_interactions.upstream_request_id) IS NOT DISTINCT FROM anthropic_interactions.upstream_request_id
+            AND COALESCE(EXCLUDED.model, anthropic_interactions.model) IS NOT DISTINCT FROM anthropic_interactions.model
+            AND COALESCE(EXCLUDED.is_stream, anthropic_interactions.is_stream) IS NOT DISTINCT FROM anthropic_interactions.is_stream
+            AND COALESCE(EXCLUDED.request_json, anthropic_interactions.request_json) IS NOT DISTINCT FROM anthropic_interactions.request_json
+            AND COALESCE(EXCLUDED.relay_key_id, anthropic_interactions.relay_key_id) IS NOT DISTINCT FROM anthropic_interactions.relay_key_id
+          )
+          THEN anthropic_interactions.last_seen_at
+          ELSE NOW()
+        END,
+        updated_at = CASE
+          WHEN (
+            COALESCE(EXCLUDED.upstream_request_id, anthropic_interactions.upstream_request_id) IS NOT DISTINCT FROM anthropic_interactions.upstream_request_id
+            AND COALESCE(EXCLUDED.model, anthropic_interactions.model) IS NOT DISTINCT FROM anthropic_interactions.model
+            AND COALESCE(EXCLUDED.is_stream, anthropic_interactions.is_stream) IS NOT DISTINCT FROM anthropic_interactions.is_stream
+            AND COALESCE(EXCLUDED.request_json, anthropic_interactions.request_json) IS NOT DISTINCT FROM anthropic_interactions.request_json
+            AND COALESCE(EXCLUDED.relay_key_id, anthropic_interactions.relay_key_id) IS NOT DISTINCT FROM anthropic_interactions.relay_key_id
+          )
+          THEN anthropic_interactions.updated_at
+          ELSE NOW()
+        END,
         upstream_request_id = COALESCE(EXCLUDED.upstream_request_id, anthropic_interactions.upstream_request_id),
         model = COALESCE(EXCLUDED.model, anthropic_interactions.model),
         is_stream = COALESCE(EXCLUDED.is_stream, anthropic_interactions.is_stream),
         request_json = COALESCE(EXCLUDED.request_json, anthropic_interactions.request_json),
-        relay_key_id = COALESCE(EXCLUDED.relay_key_id, anthropic_interactions.relay_key_id),
-        last_seen_at = NOW(),
-        updated_at = NOW()
+        relay_key_id = COALESCE(EXCLUDED.relay_key_id, anthropic_interactions.relay_key_id)
       `,
       [
         record.traceId,
@@ -150,6 +170,38 @@ function createPostgresAdapter(config) {
         NOW()
       )
       ON CONFLICT (trace_id) DO UPDATE SET
+        last_seen_at = CASE
+          WHEN (
+            COALESCE(EXCLUDED.upstream_request_id, anthropic_interactions.upstream_request_id) IS NOT DISTINCT FROM anthropic_interactions.upstream_request_id
+            AND COALESCE(EXCLUDED.model, anthropic_interactions.model) IS NOT DISTINCT FROM anthropic_interactions.model
+            AND FALSE IS NOT DISTINCT FROM anthropic_interactions.is_stream
+            AND COALESCE(EXCLUDED.response_json, anthropic_interactions.response_json) IS NOT DISTINCT FROM anthropic_interactions.response_json
+            AND COALESCE(EXCLUDED.usage, anthropic_interactions.usage) IS NOT DISTINCT FROM anthropic_interactions.usage
+            AND COALESCE(EXCLUDED.stop_reason, anthropic_interactions.stop_reason) IS NOT DISTINCT FROM anthropic_interactions.stop_reason
+            AND COALESCE(EXCLUDED.http_status, anthropic_interactions.http_status) IS NOT DISTINCT FROM anthropic_interactions.http_status
+            AND COALESCE(EXCLUDED.latency_ms, anthropic_interactions.latency_ms) IS NOT DISTINCT FROM anthropic_interactions.latency_ms
+            AND COALESCE(EXCLUDED.relay_key_id, anthropic_interactions.relay_key_id) IS NOT DISTINCT FROM anthropic_interactions.relay_key_id
+            AND EXCLUDED.status IS NOT DISTINCT FROM anthropic_interactions.status
+          )
+          THEN anthropic_interactions.last_seen_at
+          ELSE NOW()
+        END,
+        updated_at = CASE
+          WHEN (
+            COALESCE(EXCLUDED.upstream_request_id, anthropic_interactions.upstream_request_id) IS NOT DISTINCT FROM anthropic_interactions.upstream_request_id
+            AND COALESCE(EXCLUDED.model, anthropic_interactions.model) IS NOT DISTINCT FROM anthropic_interactions.model
+            AND FALSE IS NOT DISTINCT FROM anthropic_interactions.is_stream
+            AND COALESCE(EXCLUDED.response_json, anthropic_interactions.response_json) IS NOT DISTINCT FROM anthropic_interactions.response_json
+            AND COALESCE(EXCLUDED.usage, anthropic_interactions.usage) IS NOT DISTINCT FROM anthropic_interactions.usage
+            AND COALESCE(EXCLUDED.stop_reason, anthropic_interactions.stop_reason) IS NOT DISTINCT FROM anthropic_interactions.stop_reason
+            AND COALESCE(EXCLUDED.http_status, anthropic_interactions.http_status) IS NOT DISTINCT FROM anthropic_interactions.http_status
+            AND COALESCE(EXCLUDED.latency_ms, anthropic_interactions.latency_ms) IS NOT DISTINCT FROM anthropic_interactions.latency_ms
+            AND COALESCE(EXCLUDED.relay_key_id, anthropic_interactions.relay_key_id) IS NOT DISTINCT FROM anthropic_interactions.relay_key_id
+            AND EXCLUDED.status IS NOT DISTINCT FROM anthropic_interactions.status
+          )
+          THEN anthropic_interactions.updated_at
+          ELSE NOW()
+        END,
         upstream_request_id = COALESCE(EXCLUDED.upstream_request_id, anthropic_interactions.upstream_request_id),
         model = COALESCE(EXCLUDED.model, anthropic_interactions.model),
         is_stream = FALSE,
@@ -159,9 +211,7 @@ function createPostgresAdapter(config) {
         http_status = COALESCE(EXCLUDED.http_status, anthropic_interactions.http_status),
         latency_ms = COALESCE(EXCLUDED.latency_ms, anthropic_interactions.latency_ms),
         relay_key_id = COALESCE(EXCLUDED.relay_key_id, anthropic_interactions.relay_key_id),
-        status = EXCLUDED.status,
-        last_seen_at = NOW(),
-        updated_at = NOW()
+        status = EXCLUDED.status
       `,
       [
         record.traceId,
@@ -221,6 +271,44 @@ function createPostgresAdapter(config) {
         NOW()
       )
       ON CONFLICT (trace_id) DO UPDATE SET
+        last_seen_at = CASE
+          WHEN (
+            COALESCE(EXCLUDED.upstream_request_id, anthropic_interactions.upstream_request_id) IS NOT DISTINCT FROM anthropic_interactions.upstream_request_id
+            AND COALESCE(EXCLUDED.model, anthropic_interactions.model) IS NOT DISTINCT FROM anthropic_interactions.model
+            AND TRUE IS NOT DISTINCT FROM anthropic_interactions.is_stream
+            AND COALESCE(EXCLUDED.assistant_text_full, anthropic_interactions.assistant_text_full) IS NOT DISTINCT FROM anthropic_interactions.assistant_text_full
+            AND COALESCE(EXCLUDED.thought_text_full, anthropic_interactions.thought_text_full) IS NOT DISTINCT FROM anthropic_interactions.thought_text_full
+            AND COALESCE(EXCLUDED.response_message_id, anthropic_interactions.response_message_id) IS NOT DISTINCT FROM anthropic_interactions.response_message_id
+            AND COALESCE(EXCLUDED.tool_calls, anthropic_interactions.tool_calls) IS NOT DISTINCT FROM anthropic_interactions.tool_calls
+            AND COALESCE(EXCLUDED.usage, anthropic_interactions.usage) IS NOT DISTINCT FROM anthropic_interactions.usage
+            AND COALESCE(EXCLUDED.stop_reason, anthropic_interactions.stop_reason) IS NOT DISTINCT FROM anthropic_interactions.stop_reason
+            AND COALESCE(EXCLUDED.http_status, anthropic_interactions.http_status) IS NOT DISTINCT FROM anthropic_interactions.http_status
+            AND COALESCE(EXCLUDED.latency_ms, anthropic_interactions.latency_ms) IS NOT DISTINCT FROM anthropic_interactions.latency_ms
+            AND COALESCE(EXCLUDED.relay_key_id, anthropic_interactions.relay_key_id) IS NOT DISTINCT FROM anthropic_interactions.relay_key_id
+            AND EXCLUDED.status IS NOT DISTINCT FROM anthropic_interactions.status
+          )
+          THEN anthropic_interactions.last_seen_at
+          ELSE NOW()
+        END,
+        updated_at = CASE
+          WHEN (
+            COALESCE(EXCLUDED.upstream_request_id, anthropic_interactions.upstream_request_id) IS NOT DISTINCT FROM anthropic_interactions.upstream_request_id
+            AND COALESCE(EXCLUDED.model, anthropic_interactions.model) IS NOT DISTINCT FROM anthropic_interactions.model
+            AND TRUE IS NOT DISTINCT FROM anthropic_interactions.is_stream
+            AND COALESCE(EXCLUDED.assistant_text_full, anthropic_interactions.assistant_text_full) IS NOT DISTINCT FROM anthropic_interactions.assistant_text_full
+            AND COALESCE(EXCLUDED.thought_text_full, anthropic_interactions.thought_text_full) IS NOT DISTINCT FROM anthropic_interactions.thought_text_full
+            AND COALESCE(EXCLUDED.response_message_id, anthropic_interactions.response_message_id) IS NOT DISTINCT FROM anthropic_interactions.response_message_id
+            AND COALESCE(EXCLUDED.tool_calls, anthropic_interactions.tool_calls) IS NOT DISTINCT FROM anthropic_interactions.tool_calls
+            AND COALESCE(EXCLUDED.usage, anthropic_interactions.usage) IS NOT DISTINCT FROM anthropic_interactions.usage
+            AND COALESCE(EXCLUDED.stop_reason, anthropic_interactions.stop_reason) IS NOT DISTINCT FROM anthropic_interactions.stop_reason
+            AND COALESCE(EXCLUDED.http_status, anthropic_interactions.http_status) IS NOT DISTINCT FROM anthropic_interactions.http_status
+            AND COALESCE(EXCLUDED.latency_ms, anthropic_interactions.latency_ms) IS NOT DISTINCT FROM anthropic_interactions.latency_ms
+            AND COALESCE(EXCLUDED.relay_key_id, anthropic_interactions.relay_key_id) IS NOT DISTINCT FROM anthropic_interactions.relay_key_id
+            AND EXCLUDED.status IS NOT DISTINCT FROM anthropic_interactions.status
+          )
+          THEN anthropic_interactions.updated_at
+          ELSE NOW()
+        END,
         upstream_request_id = COALESCE(EXCLUDED.upstream_request_id, anthropic_interactions.upstream_request_id),
         model = COALESCE(EXCLUDED.model, anthropic_interactions.model),
         is_stream = TRUE,
@@ -233,9 +321,7 @@ function createPostgresAdapter(config) {
         http_status = COALESCE(EXCLUDED.http_status, anthropic_interactions.http_status),
         latency_ms = COALESCE(EXCLUDED.latency_ms, anthropic_interactions.latency_ms),
         relay_key_id = COALESCE(EXCLUDED.relay_key_id, anthropic_interactions.relay_key_id),
-        status = EXCLUDED.status,
-        last_seen_at = NOW(),
-        updated_at = NOW()
+        status = EXCLUDED.status
       `,
       [
         record.traceId,
@@ -272,14 +358,36 @@ function createPostgresAdapter(config) {
         updated_at
       ) VALUES ($1, true, $2::jsonb, $3, $4, $5, $6, NOW(), NOW(), NOW(), NOW())
       ON CONFLICT (trace_id) DO UPDATE SET
+        last_seen_at = CASE
+          WHEN (
+            TRUE IS NOT DISTINCT FROM anthropic_interactions.is_stream
+            AND COALESCE(EXCLUDED.usage, anthropic_interactions.usage) IS NOT DISTINCT FROM anthropic_interactions.usage
+            AND COALESCE(EXCLUDED.stop_reason, anthropic_interactions.stop_reason) IS NOT DISTINCT FROM anthropic_interactions.stop_reason
+            AND COALESCE(EXCLUDED.latency_ms, anthropic_interactions.latency_ms) IS NOT DISTINCT FROM anthropic_interactions.latency_ms
+            AND COALESCE(EXCLUDED.relay_key_id, anthropic_interactions.relay_key_id) IS NOT DISTINCT FROM anthropic_interactions.relay_key_id
+            AND COALESCE(anthropic_interactions.status, EXCLUDED.status) IS NOT DISTINCT FROM anthropic_interactions.status
+          )
+          THEN anthropic_interactions.last_seen_at
+          ELSE NOW()
+        END,
+        updated_at = CASE
+          WHEN (
+            TRUE IS NOT DISTINCT FROM anthropic_interactions.is_stream
+            AND COALESCE(EXCLUDED.usage, anthropic_interactions.usage) IS NOT DISTINCT FROM anthropic_interactions.usage
+            AND COALESCE(EXCLUDED.stop_reason, anthropic_interactions.stop_reason) IS NOT DISTINCT FROM anthropic_interactions.stop_reason
+            AND COALESCE(EXCLUDED.latency_ms, anthropic_interactions.latency_ms) IS NOT DISTINCT FROM anthropic_interactions.latency_ms
+            AND COALESCE(EXCLUDED.relay_key_id, anthropic_interactions.relay_key_id) IS NOT DISTINCT FROM anthropic_interactions.relay_key_id
+            AND COALESCE(anthropic_interactions.status, EXCLUDED.status) IS NOT DISTINCT FROM anthropic_interactions.status
+          )
+          THEN anthropic_interactions.updated_at
+          ELSE NOW()
+        END,
         is_stream = TRUE,
         usage = COALESCE(EXCLUDED.usage, anthropic_interactions.usage),
         stop_reason = COALESCE(EXCLUDED.stop_reason, anthropic_interactions.stop_reason),
         latency_ms = COALESCE(EXCLUDED.latency_ms, anthropic_interactions.latency_ms),
         relay_key_id = COALESCE(EXCLUDED.relay_key_id, anthropic_interactions.relay_key_id),
-        status = COALESCE(anthropic_interactions.status, EXCLUDED.status),
-        last_seen_at = NOW(),
-        updated_at = NOW()
+        status = COALESCE(anthropic_interactions.status, EXCLUDED.status)
       `,
       [
         record.traceId,
@@ -310,15 +418,39 @@ function createPostgresAdapter(config) {
         updated_at
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'transport_error', NOW(), NOW(), NOW(), NOW())
       ON CONFLICT (trace_id) DO UPDATE SET
+        last_seen_at = CASE
+          WHEN (
+            COALESCE(EXCLUDED.upstream_request_id, anthropic_interactions.upstream_request_id) IS NOT DISTINCT FROM anthropic_interactions.upstream_request_id
+            AND COALESCE(EXCLUDED.model, anthropic_interactions.model) IS NOT DISTINCT FROM anthropic_interactions.model
+            AND COALESCE(EXCLUDED.is_stream, anthropic_interactions.is_stream) IS NOT DISTINCT FROM anthropic_interactions.is_stream
+            AND COALESCE(EXCLUDED.http_status, anthropic_interactions.http_status) IS NOT DISTINCT FROM anthropic_interactions.http_status
+            AND COALESCE(EXCLUDED.latency_ms, anthropic_interactions.latency_ms) IS NOT DISTINCT FROM anthropic_interactions.latency_ms
+            AND COALESCE(EXCLUDED.relay_key_id, anthropic_interactions.relay_key_id) IS NOT DISTINCT FROM anthropic_interactions.relay_key_id
+            AND 'transport_error' IS NOT DISTINCT FROM anthropic_interactions.status
+          )
+          THEN anthropic_interactions.last_seen_at
+          ELSE NOW()
+        END,
+        updated_at = CASE
+          WHEN (
+            COALESCE(EXCLUDED.upstream_request_id, anthropic_interactions.upstream_request_id) IS NOT DISTINCT FROM anthropic_interactions.upstream_request_id
+            AND COALESCE(EXCLUDED.model, anthropic_interactions.model) IS NOT DISTINCT FROM anthropic_interactions.model
+            AND COALESCE(EXCLUDED.is_stream, anthropic_interactions.is_stream) IS NOT DISTINCT FROM anthropic_interactions.is_stream
+            AND COALESCE(EXCLUDED.http_status, anthropic_interactions.http_status) IS NOT DISTINCT FROM anthropic_interactions.http_status
+            AND COALESCE(EXCLUDED.latency_ms, anthropic_interactions.latency_ms) IS NOT DISTINCT FROM anthropic_interactions.latency_ms
+            AND COALESCE(EXCLUDED.relay_key_id, anthropic_interactions.relay_key_id) IS NOT DISTINCT FROM anthropic_interactions.relay_key_id
+            AND 'transport_error' IS NOT DISTINCT FROM anthropic_interactions.status
+          )
+          THEN anthropic_interactions.updated_at
+          ELSE NOW()
+        END,
         upstream_request_id = COALESCE(EXCLUDED.upstream_request_id, anthropic_interactions.upstream_request_id),
         model = COALESCE(EXCLUDED.model, anthropic_interactions.model),
         is_stream = COALESCE(EXCLUDED.is_stream, anthropic_interactions.is_stream),
         http_status = COALESCE(EXCLUDED.http_status, anthropic_interactions.http_status),
         latency_ms = COALESCE(EXCLUDED.latency_ms, anthropic_interactions.latency_ms),
         relay_key_id = COALESCE(EXCLUDED.relay_key_id, anthropic_interactions.relay_key_id),
-        status = 'transport_error',
-        last_seen_at = NOW(),
-        updated_at = NOW()
+        status = 'transport_error'
       `,
       [
         record.traceId,
@@ -349,13 +481,33 @@ function createPostgresAdapter(config) {
         updated_at
       ) VALUES ($1, $2, $3, $4, $5::jsonb, $6, 'request_captured', NOW(), NOW(), NOW(), NOW())
       ON CONFLICT (trace_id) DO UPDATE SET
+        last_seen_at = CASE
+          WHEN (
+            COALESCE(EXCLUDED.provider_kind, openai_interactions.provider_kind) IS NOT DISTINCT FROM openai_interactions.provider_kind
+            AND COALESCE(EXCLUDED.model, openai_interactions.model) IS NOT DISTINCT FROM openai_interactions.model
+            AND COALESCE(EXCLUDED.is_stream, openai_interactions.is_stream) IS NOT DISTINCT FROM openai_interactions.is_stream
+            AND COALESCE(EXCLUDED.request_json, openai_interactions.request_json) IS NOT DISTINCT FROM openai_interactions.request_json
+            AND COALESCE(EXCLUDED.relay_key_id, openai_interactions.relay_key_id) IS NOT DISTINCT FROM openai_interactions.relay_key_id
+          )
+          THEN openai_interactions.last_seen_at
+          ELSE NOW()
+        END,
+        updated_at = CASE
+          WHEN (
+            COALESCE(EXCLUDED.provider_kind, openai_interactions.provider_kind) IS NOT DISTINCT FROM openai_interactions.provider_kind
+            AND COALESCE(EXCLUDED.model, openai_interactions.model) IS NOT DISTINCT FROM openai_interactions.model
+            AND COALESCE(EXCLUDED.is_stream, openai_interactions.is_stream) IS NOT DISTINCT FROM openai_interactions.is_stream
+            AND COALESCE(EXCLUDED.request_json, openai_interactions.request_json) IS NOT DISTINCT FROM openai_interactions.request_json
+            AND COALESCE(EXCLUDED.relay_key_id, openai_interactions.relay_key_id) IS NOT DISTINCT FROM openai_interactions.relay_key_id
+          )
+          THEN openai_interactions.updated_at
+          ELSE NOW()
+        END,
         provider_kind = COALESCE(EXCLUDED.provider_kind, openai_interactions.provider_kind),
         model = COALESCE(EXCLUDED.model, openai_interactions.model),
         is_stream = COALESCE(EXCLUDED.is_stream, openai_interactions.is_stream),
         request_json = COALESCE(EXCLUDED.request_json, openai_interactions.request_json),
-        relay_key_id = COALESCE(EXCLUDED.relay_key_id, openai_interactions.relay_key_id),
-        last_seen_at = NOW(),
-        updated_at = NOW()
+        relay_key_id = COALESCE(EXCLUDED.relay_key_id, openai_interactions.relay_key_id)
       `,
       [
         record.traceId,
@@ -419,6 +571,52 @@ function createPostgresAdapter(config) {
         NOW()
       )
       ON CONFLICT (trace_id) DO UPDATE SET
+        last_seen_at = CASE
+          WHEN (
+            COALESCE(EXCLUDED.provider_kind, openai_interactions.provider_kind) IS NOT DISTINCT FROM openai_interactions.provider_kind
+            AND COALESCE(EXCLUDED.model, openai_interactions.model) IS NOT DISTINCT FROM openai_interactions.model
+            AND COALESCE(EXCLUDED.is_stream, openai_interactions.is_stream) IS NOT DISTINCT FROM openai_interactions.is_stream
+            AND COALESCE(EXCLUDED.response_id, openai_interactions.response_id) IS NOT DISTINCT FROM openai_interactions.response_id
+            AND COALESCE(EXCLUDED.assistant_text_full, openai_interactions.assistant_text_full) IS NOT DISTINCT FROM openai_interactions.assistant_text_full
+            AND COALESCE(EXCLUDED.reasoning_text_full, openai_interactions.reasoning_text_full) IS NOT DISTINCT FROM openai_interactions.reasoning_text_full
+            AND COALESCE(EXCLUDED.tool_calls, openai_interactions.tool_calls) IS NOT DISTINCT FROM openai_interactions.tool_calls
+            AND COALESCE(EXCLUDED.usage_json, openai_interactions.usage_json) IS NOT DISTINCT FROM openai_interactions.usage_json
+            AND COALESCE(EXCLUDED.input_tokens, openai_interactions.input_tokens) IS NOT DISTINCT FROM openai_interactions.input_tokens
+            AND COALESCE(EXCLUDED.output_tokens, openai_interactions.output_tokens) IS NOT DISTINCT FROM openai_interactions.output_tokens
+            AND COALESCE(EXCLUDED.total_tokens, openai_interactions.total_tokens) IS NOT DISTINCT FROM openai_interactions.total_tokens
+            AND COALESCE(EXCLUDED.cached_tokens, openai_interactions.cached_tokens) IS NOT DISTINCT FROM openai_interactions.cached_tokens
+            AND COALESCE(EXCLUDED.reasoning_tokens, openai_interactions.reasoning_tokens) IS NOT DISTINCT FROM openai_interactions.reasoning_tokens
+            AND COALESCE(EXCLUDED.http_status, openai_interactions.http_status) IS NOT DISTINCT FROM openai_interactions.http_status
+            AND COALESCE(EXCLUDED.latency_ms, openai_interactions.latency_ms) IS NOT DISTINCT FROM openai_interactions.latency_ms
+            AND COALESCE(EXCLUDED.relay_key_id, openai_interactions.relay_key_id) IS NOT DISTINCT FROM openai_interactions.relay_key_id
+            AND EXCLUDED.status IS NOT DISTINCT FROM openai_interactions.status
+          )
+          THEN openai_interactions.last_seen_at
+          ELSE NOW()
+        END,
+        updated_at = CASE
+          WHEN (
+            COALESCE(EXCLUDED.provider_kind, openai_interactions.provider_kind) IS NOT DISTINCT FROM openai_interactions.provider_kind
+            AND COALESCE(EXCLUDED.model, openai_interactions.model) IS NOT DISTINCT FROM openai_interactions.model
+            AND COALESCE(EXCLUDED.is_stream, openai_interactions.is_stream) IS NOT DISTINCT FROM openai_interactions.is_stream
+            AND COALESCE(EXCLUDED.response_id, openai_interactions.response_id) IS NOT DISTINCT FROM openai_interactions.response_id
+            AND COALESCE(EXCLUDED.assistant_text_full, openai_interactions.assistant_text_full) IS NOT DISTINCT FROM openai_interactions.assistant_text_full
+            AND COALESCE(EXCLUDED.reasoning_text_full, openai_interactions.reasoning_text_full) IS NOT DISTINCT FROM openai_interactions.reasoning_text_full
+            AND COALESCE(EXCLUDED.tool_calls, openai_interactions.tool_calls) IS NOT DISTINCT FROM openai_interactions.tool_calls
+            AND COALESCE(EXCLUDED.usage_json, openai_interactions.usage_json) IS NOT DISTINCT FROM openai_interactions.usage_json
+            AND COALESCE(EXCLUDED.input_tokens, openai_interactions.input_tokens) IS NOT DISTINCT FROM openai_interactions.input_tokens
+            AND COALESCE(EXCLUDED.output_tokens, openai_interactions.output_tokens) IS NOT DISTINCT FROM openai_interactions.output_tokens
+            AND COALESCE(EXCLUDED.total_tokens, openai_interactions.total_tokens) IS NOT DISTINCT FROM openai_interactions.total_tokens
+            AND COALESCE(EXCLUDED.cached_tokens, openai_interactions.cached_tokens) IS NOT DISTINCT FROM openai_interactions.cached_tokens
+            AND COALESCE(EXCLUDED.reasoning_tokens, openai_interactions.reasoning_tokens) IS NOT DISTINCT FROM openai_interactions.reasoning_tokens
+            AND COALESCE(EXCLUDED.http_status, openai_interactions.http_status) IS NOT DISTINCT FROM openai_interactions.http_status
+            AND COALESCE(EXCLUDED.latency_ms, openai_interactions.latency_ms) IS NOT DISTINCT FROM openai_interactions.latency_ms
+            AND COALESCE(EXCLUDED.relay_key_id, openai_interactions.relay_key_id) IS NOT DISTINCT FROM openai_interactions.relay_key_id
+            AND EXCLUDED.status IS NOT DISTINCT FROM openai_interactions.status
+          )
+          THEN openai_interactions.updated_at
+          ELSE NOW()
+        END,
         provider_kind = COALESCE(EXCLUDED.provider_kind, openai_interactions.provider_kind),
         model = COALESCE(EXCLUDED.model, openai_interactions.model),
         is_stream = COALESCE(EXCLUDED.is_stream, openai_interactions.is_stream),
@@ -435,9 +633,7 @@ function createPostgresAdapter(config) {
         http_status = COALESCE(EXCLUDED.http_status, openai_interactions.http_status),
         latency_ms = COALESCE(EXCLUDED.latency_ms, openai_interactions.latency_ms),
         relay_key_id = COALESCE(EXCLUDED.relay_key_id, openai_interactions.relay_key_id),
-        status = EXCLUDED.status,
-        last_seen_at = NOW(),
-        updated_at = NOW()
+        status = EXCLUDED.status
       `,
       [
         record.traceId,
