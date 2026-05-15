@@ -103,8 +103,8 @@ async function processFile(filePath) {
   const key = filePath
   const prev = states.get(key) || { inode: null, offset: 0, remainder: '' }
 
-  let offset = prev.offset
-  let remainder = prev.remainder || ''
+  let { offset, remainder } = prev
+  remainder = remainder || ''
   const inode = String(stat.ino)
 
   if (prev.inode && prev.inode !== inode) {
@@ -349,7 +349,7 @@ async function processLine(sourceFile, line) {
   }
 
   if (eventType === 'openai_upstream_response_transport_error') {
-    logDebug('openai_transport_error', { traceId })
+    await upsertOpenaiTransportError(traceId, payload)
     return
   }
 }
@@ -514,11 +514,15 @@ async function upsertOpenaiNonStreamResponse(traceId, payload) {
     responseStatus = sseParsed.status || responseStatus
     usage = sseParsed.usage || usage
 
-    const outputContent = extractOutputContent(sseParsed.output)
-    assistantTextFull = outputContent.assistantTextFull || assistantTextFull
-    reasoningTextFull = outputContent.reasoningTextFull || reasoningTextFull
-    if (outputContent.toolCalls.length > 0) {
-      toolCalls = outputContent.toolCalls
+    const {
+      assistantTextFull: parsedAssistantTextFull,
+      reasoningTextFull: parsedReasoningTextFull,
+      toolCalls: parsedToolCalls
+    } = extractOutputContent(sseParsed.output)
+    assistantTextFull = parsedAssistantTextFull || assistantTextFull
+    reasoningTextFull = parsedReasoningTextFull || reasoningTextFull
+    if (parsedToolCalls.length > 0) {
+      toolCalls = parsedToolCalls
     }
   }
 
@@ -619,6 +623,39 @@ async function upsertOpenaiStreamResponse(traceId, payload) {
   })
 }
 
+async function upsertOpenaiTransportError(traceId, payload) {
+  const providerKind = payload.provider_kind || null
+  const relayKeyId = payload.relay_key_id || null
+  const request = payload.request || {}
+  const model = request.request_model || request.model || null
+  const isStream = request.request_stream === true || request.stream === true
+  const httpStatus = extractInt(
+    payload.http_status || payload.statusCode || (payload.upstream && payload.upstream.statusCode)
+  )
+  const latencyMs = extractInt((payload.timing && payload.timing.latency_ms) || payload.latency_ms)
+
+  await db.upsertOpenaiResponse({
+    traceId,
+    providerKind,
+    model,
+    isStream,
+    responseId: null,
+    assistantTextFull: null,
+    reasoningTextFull: null,
+    toolCalls: null,
+    usageJson: null,
+    inputTokens: null,
+    outputTokens: null,
+    totalTokens: null,
+    cachedTokens: null,
+    reasoningTokens: null,
+    httpStatus,
+    latencyMs,
+    status: 'transport_error',
+    relayKeyId
+  })
+}
+
 async function persistState(filePath, inode, offset, remainder) {
   await db.persistOffset({ filePath, inode, offset, remainder })
 }
@@ -639,9 +676,15 @@ function validateConfig(runtimeConfig) {
 
   if (runtimeConfig.dbBackend === 'mysql') {
     const missing = []
-    if (!runtimeConfig.mysql.host) missing.push('MYSQL_HOST')
-    if (!runtimeConfig.mysql.user) missing.push('MYSQL_USER')
-    if (!runtimeConfig.mysql.database) missing.push('MYSQL_DATABASE')
+    if (!runtimeConfig.mysql.host) {
+      missing.push('MYSQL_HOST')
+    }
+    if (!runtimeConfig.mysql.user) {
+      missing.push('MYSQL_USER')
+    }
+    if (!runtimeConfig.mysql.database) {
+      missing.push('MYSQL_DATABASE')
+    }
 
     if (missing.length > 0) {
       // eslint-disable-next-line no-console
