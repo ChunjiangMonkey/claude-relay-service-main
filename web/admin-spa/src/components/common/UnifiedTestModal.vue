@@ -335,6 +335,7 @@ const platformFallbackModels = {
   gemini: 'gemini-2.5-pro',
   'gemini-api': 'gemini-2.5-flash',
   'openai-responses': 'gpt-5',
+  copilot: 'copilot,default',
   droid: 'claude-sonnet-4-5-20250929',
   ccr: 'claude-sonnet-4-5-20250929'
 }
@@ -452,6 +453,11 @@ const platformConfigs = {
     label: 'CCR',
     icon: 'fas fa-key',
     badge: 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300'
+  },
+  copilot: {
+    label: 'Copilot',
+    icon: 'fas fa-code-branch',
+    badge: 'bg-orange-100 text-orange-700 dark:bg-orange-500/20 dark:text-orange-300'
   }
 }
 
@@ -530,6 +536,7 @@ const getAccountEndpoint = () => {
     'openai-responses': `${APP_CONFIG.apiPrefix}/admin/openai-responses-accounts/${props.account.id}/test`,
     'azure-openai': `${APP_CONFIG.apiPrefix}/admin/azure-openai-accounts/${props.account.id}/test`,
     droid: `${APP_CONFIG.apiPrefix}/admin/droid-accounts/${props.account.id}/test`,
+    copilot: `${APP_CONFIG.apiPrefix}/admin/copilot-accounts/${props.account.id}/test`,
     ccr: `${APP_CONFIG.apiPrefix}/admin/ccr-accounts/${props.account.id}/test`
   }
   return endpoints[platform] || ''

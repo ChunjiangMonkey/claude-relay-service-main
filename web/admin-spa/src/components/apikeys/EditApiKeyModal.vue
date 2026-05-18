@@ -528,6 +528,16 @@
                   v-model="form.permissions"
                   class="mr-2 rounded text-blue-600 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
                   type="checkbox"
+                  value="copilot"
+                  @change="updatePermissions"
+                />
+                <span class="text-sm text-gray-700 dark:text-gray-300">Copilot</span>
+              </label>
+              <label class="flex cursor-pointer items-center">
+                <input
+                  v-model="form.permissions"
+                  class="mr-2 rounded text-blue-600 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
+                  type="checkbox"
                   value="droid"
                   @change="updatePermissions"
                 />
@@ -1123,6 +1133,7 @@ const availableServices = [
   { key: 'claude', label: 'Claude' },
   { key: 'gemini', label: 'Gemini' },
   { key: 'codex', label: 'Codex' },
+  { key: 'copilot', label: 'Copilot' },
   { key: 'droid', label: 'Droid' },
   { key: 'bedrock', label: 'Bedrock' },
   { key: 'azure', label: 'Azure' },
@@ -1696,7 +1707,7 @@ onMounted(async () => {
   form.weeklyResetHour = props.apiKey.weeklyResetHour || 0
   // 处理权限数据，兼容旧格式（字符串）和新格式（数组）
   // 有效的权限值
-  const VALID_PERMS = ['claude', 'gemini', 'openai', 'droid']
+  const VALID_PERMS = ['claude', 'gemini', 'openai', 'copilot', 'droid']
   let perms = props.apiKey.permissions
   // 如果是字符串，尝试 JSON.parse（Redis 可能返回 "[]" 或 "[\"gemini\"]"）
   if (typeof perms === 'string') {

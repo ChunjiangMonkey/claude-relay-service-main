@@ -10,7 +10,7 @@ const requestBodyRuleService = require('../../services/requestBodyRuleService')
 const router = express.Router()
 
 // 有效的权限值列表
-const VALID_PERMISSIONS = ['claude', 'gemini', 'openai', 'droid']
+const VALID_PERMISSIONS = ['claude', 'gemini', 'openai', 'copilot', 'droid']
 
 /**
  * 验证权限数组格式

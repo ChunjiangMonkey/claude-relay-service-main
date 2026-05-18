@@ -414,6 +414,41 @@
                       <label
                         class="group relative flex cursor-pointer items-center rounded-md border p-2 transition-all"
                         :class="[
+                          form.platform === 'copilot'
+                            ? 'border-amber-500 bg-amber-50 dark:border-amber-400 dark:bg-amber-900/30'
+                            : 'border-gray-300 bg-white hover:border-amber-400 hover:bg-amber-50/50 dark:border-gray-600 dark:bg-gray-700 dark:hover:border-amber-500 dark:hover:bg-amber-900/20'
+                        ]"
+                      >
+                        <input
+                          v-model="form.platform"
+                          class="sr-only"
+                          type="radio"
+                          value="copilot"
+                        />
+                        <div class="flex items-center gap-2">
+                          <i
+                            class="fas fa-code-branch text-sm text-amber-600 dark:text-amber-400"
+                          ></i>
+                          <div>
+                            <span class="block text-xs font-medium text-gray-900 dark:text-gray-100"
+                              >Copilot</span
+                            >
+                            <span class="text-xs text-gray-500 dark:text-gray-400"
+                              >内部 Copilot API</span
+                            >
+                          </div>
+                        </div>
+                        <div
+                          v-if="form.platform === 'copilot'"
+                          class="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-amber-500"
+                        >
+                          <i class="fas fa-check text-xs text-white"></i>
+                        </div>
+                      </label>
+
+                      <label
+                        class="group relative flex cursor-pointer items-center rounded-md border p-2 transition-all"
+                        :class="[
                           form.platform === 'azure_openai'
                             ? 'border-blue-500 bg-blue-50 dark:border-blue-400 dark:bg-blue-900/30'
                             : 'border-gray-300 bg-white hover:border-blue-400 hover:bg-blue-50/50 dark:border-gray-600 dark:bg-gray-700 dark:hover:border-blue-500 dark:hover:bg-blue-900/20'
@@ -4095,6 +4130,7 @@ const show = ref(true)
 const autoProtectionPlatforms = [
   'claude-console',
   'ccr',
+  'copilot',
   'droid',
   'bedrock',
   'azure-openai',
@@ -6160,10 +6196,11 @@ watch(
     if (
       newPlatform === 'claude-console' ||
       newPlatform === 'ccr' ||
+      newPlatform === 'copilot' ||
       newPlatform === 'bedrock' ||
       newPlatform === 'openai-responses'
     ) {
-      form.value.addType = 'manual' // Claude Console、CCR、Bedrock 和 OpenAI-Responses 只支持手动模式
+      form.value.addType = 'manual' // Claude Console、CCR、Copilot、Bedrock 和 OpenAI-Responses 只支持手动模式
     } else if (newPlatform === 'claude') {
       // 切换到 Claude 时，使用 oauth 作为默认方式
       form.value.addType = 'oauth'

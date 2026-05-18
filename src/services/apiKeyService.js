@@ -15,6 +15,7 @@ const ACCOUNT_TYPE_CONFIG = {
   openai: { prefix: 'openai:account:' },
   'openai-responses': { prefix: 'openai_responses_account:' },
   'azure-openai': { prefix: 'azure_openai:account:' },
+  copilot: { prefix: 'copilot_account:' },
   gemini: { prefix: 'gemini_account:' },
   'gemini-api': { prefix: 'gemini_api_account:' },
   droid: { prefix: 'droid:account:' }
@@ -24,6 +25,7 @@ const ACCOUNT_TYPE_PRIORITY = [
   'openai',
   'openai-responses',
   'azure-openai',
+  'copilot',
   'claude',
   'claude-console',
   'gemini',
@@ -37,6 +39,7 @@ const ACCOUNT_CATEGORY_MAP = {
   openai: 'openai',
   'openai-responses': 'openai',
   'azure-openai': 'openai',
+  copilot: 'copilot',
   gemini: 'gemini',
   'gemini-api': 'gemini',
   droid: 'droid'
@@ -1852,8 +1855,8 @@ class ApiKeyService {
         return
       }
 
-      // 判断是否为 claude-official、claude-console 或 ccr 账户
-      const opusAccountTypes = ['claude-official', 'claude-console', 'ccr']
+      // 判断是否为 claude-official、claude-console、ccr 或 copilot 账户
+      const opusAccountTypes = ['claude-official', 'claude-console', 'ccr', 'copilot']
       if (!accountType || !opusAccountTypes.includes(accountType)) {
         logger.debug(`⚠️ Skipping Opus cost recording for non-Claude account type: ${accountType}`)
         return // 不是 claude 账户，直接返回
@@ -2271,12 +2274,20 @@ class ApiKeyService {
         pushType('openai')
         pushType('openai-responses')
         pushType('azure-openai')
+        if (lowerModel.startsWith('copilot,')) {
+          pushType('copilot')
+        }
       } else if (lowerModel.includes('gemini')) {
         pushType('gemini')
         pushType('gemini-api')
       } else if (lowerModel.includes('claude') || lowerModel.includes('anthropic')) {
         pushType('claude')
         pushType('claude-console')
+        if (lowerModel.startsWith('copilot,')) {
+          pushType('copilot')
+        }
+      } else if (lowerModel.startsWith('copilot,')) {
+        pushType('copilot')
       } else if (lowerModel.includes('droid')) {
         pushType('droid')
       }
@@ -2633,7 +2644,8 @@ class ApiKeyService {
         azure_openai: 'azureOpenaiAccountId',
         bedrock: 'bedrockAccountId',
         droid: 'droidAccountId',
-        ccr: null // CCR 账号没有对应的 API Key 字段
+        ccr: null, // CCR 账号没有对应的 API Key 字段
+        copilot: null // Copilot 首版只走共享池
       }
 
       const field = fieldMap[accountType]

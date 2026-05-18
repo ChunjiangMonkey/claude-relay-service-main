@@ -27,7 +27,8 @@ class ServiceRatesService {
         droid: 1.0,
         bedrock: 1.0,
         azure: 1.0,
-        ccr: 1.0
+        ccr: 1.0,
+        copilot: 1.0
       },
       updatedAt: null,
       updatedBy: null
@@ -220,6 +221,7 @@ class ServiceRatesService {
       'claude-official': 'claude',
       'claude-console': 'claude',
       ccr: 'ccr',
+      copilot: 'copilot',
       bedrock: 'bedrock',
       gemini: 'gemini',
       'openai-responses': 'codex',

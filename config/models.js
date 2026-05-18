@@ -41,6 +41,15 @@ const OPENAI_MODELS = [
   { value: 'codex-mini', label: 'Codex Mini' }
 ]
 
+const COPILOT_MODELS = [
+  { value: 'copilot,default', label: 'Copilot Default' },
+  { value: 'copilot,opus', label: 'Copilot Opus' },
+  { value: 'copilot,sonnet', label: 'Copilot Sonnet' },
+  { value: 'copilot,haiku', label: 'Copilot Haiku' },
+  { value: 'copilot,gpt', label: 'Copilot GPT' },
+  { value: 'copilot,codex', label: 'Copilot Codex' }
+]
+
 const BEDROCK_MODELS = [
   { value: 'us.anthropic.claude-opus-4-6-20250610-v1:0', label: 'Claude Opus 4.6' },
   { value: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0', label: 'Claude Sonnet 4.5' },
@@ -64,6 +73,7 @@ const PLATFORM_TEST_MODELS = {
   gemini: GEMINI_MODELS,
   'gemini-api': GEMINI_MODELS,
   'openai-responses': OPENAI_MODELS,
+  copilot: COPILOT_MODELS,
   'azure-openai': [],
   droid: CLAUDE_MODELS,
   ccr: CLAUDE_MODELS
@@ -85,10 +95,19 @@ module.exports = {
         return GEMINI_MODELS
       case 'openai':
         return OPENAI_MODELS
+      case 'copilot':
+        return COPILOT_MODELS
       default:
         return []
     }
   },
   // 获取所有模型（用于账户编辑）
-  getAllModels: () => [...CLAUDE_MODELS, ...GEMINI_MODELS, ...OPENAI_MODELS, ...OTHER_MODELS]
+  COPILOT_MODELS,
+  getAllModels: () => [
+    ...CLAUDE_MODELS,
+    ...GEMINI_MODELS,
+    ...OPENAI_MODELS,
+    ...COPILOT_MODELS,
+    ...OTHER_MODELS
+  ]
 }

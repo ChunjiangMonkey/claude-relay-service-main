@@ -4,6 +4,7 @@ const claudeRelayConfigService = require('./claudeRelayConfigService')
 const claudeAccountService = require('./account/claudeAccountService')
 const claudeConsoleAccountService = require('./account/claudeConsoleAccountService')
 const ccrAccountService = require('./account/ccrAccountService')
+const copilotAccountService = require('./account/copilotAccountService')
 const geminiAccountService = require('./account/geminiAccountService')
 const geminiApiAccountService = require('./account/geminiApiAccountService')
 const openaiAccountService = require('./account/openaiAccountService')
@@ -34,6 +35,7 @@ const accountTypeNames = {
   'claude-official': 'Claude官方',
   'claude-console': 'Claude Console',
   ccr: 'Claude Console Relay',
+  copilot: 'Copilot',
   openai: 'OpenAI',
   'openai-responses': 'OpenAI Responses',
   'azure-openai': 'Azure OpenAI',
@@ -48,6 +50,7 @@ const accountServices = {
   claude: claudeAccountService,
   'claude-console': claudeConsoleAccountService,
   ccr: ccrAccountService,
+  copilot: copilotAccountService,
   openai: openaiAccountService,
   'openai-responses': openaiResponsesAccountService,
   'azure-openai': azureOpenaiAccountService,

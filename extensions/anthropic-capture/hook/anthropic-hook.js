@@ -1,5 +1,6 @@
 'use strict'
 
+const http = require('http')
 const https = require('https')
 const fs = require('fs/promises')
 const path = require('path')
@@ -53,7 +54,8 @@ if (!config.enabled) {
   return
 }
 
-patchHttpsRequest()
+patchRequestModule(https, 'https:')
+patchRequestModule(http, 'http:')
 global[ACTIVE_SENTINEL] = true
 logDebug('Anthropic capture hook installed', {
   captureDir: config.captureDir,
@@ -182,9 +184,9 @@ function safeJsonStringify(payload, maxBytes, eventType) {
   return json
 }
 
-function normalizeRequestMeta(firstArg, secondArg) {
+function normalizeRequestMeta(firstArg, secondArg, defaultProtocol = 'https:') {
   const defaults = {
-    protocol: 'https:',
+    protocol: defaultProtocol,
     method: 'GET',
     hostname: '',
     host: '',
@@ -720,11 +722,11 @@ function buildNonStreamRecord(
   }
 }
 
-function patchHttpsRequest() {
-  const originalRequest = https.request
+function patchRequestModule(requestModule, defaultProtocol) {
+  const originalRequest = requestModule.request
 
-  https.request = function patchedRequest(...args) {
-    const requestMeta = normalizeRequestMeta(args[0], args[1])
+  requestModule.request = function patchedRequest(...args) {
+    const requestMeta = normalizeRequestMeta(args[0], args[1], defaultProtocol)
     if (!shouldCaptureRequest(requestMeta)) {
       return originalRequest.apply(this, args)
     }

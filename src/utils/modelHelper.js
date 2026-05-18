@@ -5,9 +5,9 @@
  * Supports parsing model strings like "ccr,model_name" to extract vendor type and base model.
  */
 
-// 仅保留原仓库既有的模型前缀：CCR 路由
+// 仅保留明确的一等渠道前缀：CCR 与 Copilot 路由
 // Gemini/Antigravity 采用“路径分流”，避免在 model 字段里混入 vendor 前缀造成混乱
-const SUPPORTED_VENDOR_PREFIXES = ['ccr']
+const SUPPORTED_VENDOR_PREFIXES = ['ccr', 'copilot']
 
 /**
  * Parse vendor-prefixed model string
@@ -72,7 +72,7 @@ function getEffectiveModel(modelStr) {
 /**
  * Get the vendor type from a model string
  * @param {string} modelStr - Model string to parse
- * @returns {string|null} - Vendor type ('ccr') or null if no prefix
+ * @returns {string|null} - Vendor type ('ccr'/'copilot') or null if no prefix
  */
 function getVendorType(modelStr) {
   const { vendor } = parseVendorPrefixedModel(modelStr)

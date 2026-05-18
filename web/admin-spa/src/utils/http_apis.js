@@ -224,6 +224,16 @@ export const createCcrAccountApi = (data) =>
 export const updateCcrAccountApi = (id, data) =>
   request({ url: `/admin/ccr-accounts/${id}`, method: 'PUT', data })
 
+// Copilot 账户
+export const getCopilotAccountsApi = () =>
+  request({ url: '/admin/copilot-accounts', method: 'GET' })
+export const createCopilotAccountApi = (data) =>
+  request({ url: '/admin/copilot-accounts', method: 'POST', data })
+export const updateCopilotAccountApi = (id, data) =>
+  request({ url: `/admin/copilot-accounts/${id}`, method: 'PUT', data })
+export const refreshCopilotModelsApi = (id) =>
+  request({ url: `/admin/copilot-accounts/${id}/refresh-models`, method: 'POST' })
+
 // 账户通用操作
 export const toggleAccountStatusApi = (endpoint) => request({ url: endpoint, method: 'PUT' })
 export const deleteAccountByEndpointApi = (endpoint) => request({ url: endpoint, method: 'DELETE' })

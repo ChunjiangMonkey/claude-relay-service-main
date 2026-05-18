@@ -6,6 +6,7 @@ const CostCalculator = require('../utils/costCalculator')
 const claudeAccountService = require('../services/account/claudeAccountService')
 const openaiAccountService = require('../services/account/openaiAccountService')
 const serviceRatesService = require('../services/serviceRatesService')
+const copilotAccountService = require('../services/account/copilotAccountService')
 const {
   createClaudeTestPayload,
   extractErrorMessage,
@@ -17,16 +18,29 @@ const { getSafeMessage } = require('../utils/errorSanitizer')
 const router = express.Router()
 
 // 📋 获取可用模型列表（公开接口）
-router.get('/models', (req, res) => {
+router.get('/models', async (req, res) => {
   const { service } = req.query
 
   if (service) {
     // 返回指定服务的模型
-    const models = modelsConfig.getModelsByService(service)
+    const models =
+      service === 'copilot'
+        ? await copilotAccountService
+            .getPlatformTestModels()
+            .catch(() => modelsConfig.getModelsByService(service))
+        : modelsConfig.getModelsByService(service)
     return res.json({
       success: true,
       data: models
     })
+  }
+
+  const copilotModels = await copilotAccountService
+    .getPlatformTestModels()
+    .catch(() => modelsConfig.COPILOT_MODELS)
+  const platforms = {
+    ...modelsConfig.PLATFORM_TEST_MODELS,
+    copilot: copilotModels
   }
 
   // 返回所有模型（按服务分组 + 平台维度）
@@ -36,9 +50,10 @@ router.get('/models', (req, res) => {
       claude: modelsConfig.CLAUDE_MODELS,
       gemini: modelsConfig.GEMINI_MODELS,
       openai: modelsConfig.OPENAI_MODELS,
+      copilot: copilotModels,
       other: modelsConfig.OTHER_MODELS,
       all: modelsConfig.getAllModels(),
-      platforms: modelsConfig.PLATFORM_TEST_MODELS
+      platforms
     }
   })
 })

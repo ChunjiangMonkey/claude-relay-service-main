@@ -14,8 +14,8 @@ function formatTzDateYmd(tzDate) {
   return `${tzDate.getUTCFullYear()}-${pad2(tzDate.getUTCMonth() + 1)}-${pad2(tzDate.getUTCDate())}`
 }
 
-// 推断账户类型的辅助函数（与运行时 recordOpusCost 一致，只统计 claude-official/claude-console/ccr）
-const OPUS_ACCOUNT_TYPES = ['claude-official', 'claude-console', 'ccr']
+// 推断账户类型的辅助函数（与运行时 recordOpusCost 一致）
+const OPUS_ACCOUNT_TYPES = ['claude-official', 'claude-console', 'ccr', 'copilot']
 
 function inferAccountType(keyData) {
   if (keyData?.ccrAccountId) {

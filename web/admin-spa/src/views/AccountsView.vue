@@ -649,6 +649,19 @@
                       >
                     </div>
                     <div
+                      v-else-if="account.platform === 'copilot'"
+                      class="flex items-center gap-1.5 rounded-lg border border-amber-200 bg-gradient-to-r from-amber-100 to-orange-100 px-2.5 py-1 dark:border-amber-700 dark:from-amber-900/20 dark:to-orange-900/20"
+                    >
+                      <i class="fas fa-code-branch text-xs text-amber-700 dark:text-amber-400" />
+                      <span class="text-xs font-semibold text-amber-800 dark:text-amber-300"
+                        >Copilot</span
+                      >
+                      <span class="mx-1 h-4 w-px bg-amber-300 dark:bg-amber-600" />
+                      <span class="text-xs font-medium text-amber-700 dark:text-amber-300"
+                        >API</span
+                      >
+                    </div>
+                    <div
                       v-else-if="account.platform === 'droid'"
                       class="flex items-center gap-1.5 rounded-lg border border-cyan-200 bg-gradient-to-r from-cyan-100 to-sky-100 px-2.5 py-1 dark:border-cyan-700 dark:from-cyan-900/20 dark:to-sky-900/20"
                     >
@@ -1233,6 +1246,7 @@
                       account.platform === 'openai' ||
                       account.platform === 'openai-responses' ||
                       account.platform === 'azure_openai' ||
+                      account.platform === 'copilot' ||
                       account.platform === 'ccr' ||
                       account.platform === 'droid' ||
                       account.platform === 'gemini-api'
@@ -1458,11 +1472,13 @@
                         ? 'bg-gradient-to-br from-blue-500 to-cyan-600'
                         : account.platform === 'openai'
                           ? 'bg-gradient-to-br from-gray-600 to-gray-700'
-                          : account.platform === 'ccr'
-                            ? 'bg-gradient-to-br from-teal-500 to-emerald-600'
-                            : account.platform === 'droid'
-                              ? 'bg-gradient-to-br from-cyan-500 to-sky-600'
-                              : 'bg-gradient-to-br from-blue-500 to-blue-600'
+                          : account.platform === 'copilot'
+                            ? 'bg-gradient-to-br from-amber-500 to-orange-600'
+                            : account.platform === 'ccr'
+                              ? 'bg-gradient-to-br from-teal-500 to-emerald-600'
+                              : account.platform === 'droid'
+                                ? 'bg-gradient-to-br from-cyan-500 to-sky-600'
+                                : 'bg-gradient-to-br from-blue-500 to-blue-600'
                 ]"
               >
                 <i
@@ -1476,11 +1492,13 @@
                           ? 'fab fa-microsoft'
                           : account.platform === 'openai'
                             ? 'fas fa-openai'
-                            : account.platform === 'ccr'
+                            : account.platform === 'copilot'
                               ? 'fas fa-code-branch'
-                              : account.platform === 'droid'
-                                ? 'fas fa-robot'
-                                : 'fas fa-robot'
+                              : account.platform === 'ccr'
+                                ? 'fas fa-code-branch'
+                                : account.platform === 'droid'
+                                  ? 'fas fa-robot'
+                                  : 'fas fa-robot'
                   ]"
                 />
               </div>
@@ -2018,7 +2036,10 @@
 
     <!-- 添加账户模态框 -->
     <AccountForm
-      v-if="showCreateAccountModal && (!newAccountPlatform || newAccountPlatform !== 'ccr')"
+      v-if="
+        showCreateAccountModal &&
+        (!newAccountPlatform || !['ccr', 'copilot'].includes(newAccountPlatform))
+      "
       @close="closeCreateAccountModal"
       @platform-changed="newAccountPlatform = $event"
       @success="handleCreateSuccess"
@@ -2028,10 +2049,21 @@
       @close="closeCreateAccountModal"
       @success="handleCreateSuccess"
     />
+    <CopilotAccountForm
+      v-else-if="showCreateAccountModal && newAccountPlatform === 'copilot'"
+      @close="closeCreateAccountModal"
+      @success="handleCreateSuccess"
+    />
 
     <!-- 编辑账户模态框 -->
     <CcrAccountForm
       v-if="showEditAccountModal && editingAccount && editingAccount.platform === 'ccr'"
+      :account="editingAccount"
+      @close="showEditAccountModal = false"
+      @success="handleEditSuccess"
+    />
+    <CopilotAccountForm
+      v-else-if="showEditAccountModal && editingAccount && editingAccount.platform === 'copilot'"
       :account="editingAccount"
       @close="showEditAccountModal = false"
       @success="handleEditSuccess"
@@ -2263,6 +2295,7 @@ import { showToast, copyText, formatNumber, formatRelativeTime } from '@/utils/t
 import * as httpApis from '@/utils/http_apis'
 import AccountForm from '@/components/accounts/AccountForm.vue'
 import CcrAccountForm from '@/components/accounts/CcrAccountForm.vue'
+import CopilotAccountForm from '@/components/accounts/CopilotAccountForm.vue'
 import AccountUsageDetailModal from '@/components/accounts/AccountUsageDetailModal.vue'
 import AccountErrorHistoryModal from '@/components/accounts/AccountErrorHistoryModal.vue'
 import AccountExpiryEditModal from '@/components/accounts/AccountExpiryEditModal.vue'
@@ -2350,6 +2383,7 @@ const TEMP_UNAVAILABLE_ACCOUNT_TYPE_ALIASES = {
   'gemini-api': ['gemini-api'],
   openai: ['openai'],
   'openai-responses': ['openai-responses'],
+  copilot: ['copilot'],
   ccr: ['ccr'],
   droid: ['droid'],
   azure_openai: ['azure-openai'],
@@ -2396,6 +2430,7 @@ const supportedUsagePlatforms = [
   'claude-console',
   'openai',
   'openai-responses',
+  'copilot',
   'gemini',
   'droid',
   'gemini-api',
@@ -2461,6 +2496,7 @@ const platformHierarchy = [
     children: [
       { value: 'openai', label: 'OpenAI 官方', icon: 'fa-openai' },
       { value: 'openai-responses', label: 'OpenAI-Responses (Codex)', icon: 'fa-server' },
+      { value: 'copilot', label: 'Copilot API', icon: 'fa-code-branch' },
       { value: 'azure_openai', label: 'Azure OpenAI', icon: 'fab fa-microsoft' }
     ]
   },
@@ -2484,7 +2520,7 @@ const platformHierarchy = [
 // 平台分组映射
 const platformGroupMap = {
   'group-claude': ['claude', 'claude-console', 'bedrock', 'ccr'],
-  'group-openai': ['openai', 'openai-responses', 'azure_openai'],
+  'group-openai': ['openai', 'openai-responses', 'copilot', 'azure_openai'],
   'group-gemini': ['gemini', 'gemini-api'],
   'group-droid': ['droid']
 }
@@ -2498,6 +2534,7 @@ const platformRequestHandlers = {
   openai: () => httpApis.getOpenAIAccountsApi(),
   azure_openai: () => httpApis.getAzureOpenAIAccountsApi(),
   'openai-responses': () => httpApis.getOpenAIResponsesAccountsApi(),
+  copilot: () => httpApis.getCopilotAccountsApi(),
   ccr: () => httpApis.getCcrAccountsApi(),
   droid: () => httpApis.getDroidAccountsApi(),
   'gemini-api': () => httpApis.getGeminiApiAccountsApi()
@@ -2634,6 +2671,7 @@ const showResetButton = (account) => {
     'claude-console',
     'openai',
     'openai-responses',
+    'copilot',
     'gemini',
     'gemini-api',
     'ccr',
@@ -2682,6 +2720,15 @@ const getAccountActions = (account) => {
 
   // 测试账户
   if (canTestAccount(account)) {
+    if (account.platform === 'copilot') {
+      actions.push({
+        key: 'refresh-models',
+        label: '刷新模型',
+        icon: 'fa-sync',
+        color: 'emerald',
+        handler: () => refreshCopilotModels(account)
+      })
+    }
     actions.push({
       key: 'test',
       label: '测试',
@@ -2737,6 +2784,21 @@ const openAccountUsageModal = async (account) => {
   accountUsageLoading.value = false
 }
 
+const refreshCopilotModels = async (account) => {
+  if (!account || account.platform !== 'copilot') return
+  try {
+    const data = await httpApis.refreshCopilotModelsApi(account.id)
+    if (data.success) {
+      showToast('Copilot 模型列表已刷新', 'success')
+      await loadAccounts(true)
+    } else {
+      showToast(data.message || '刷新模型列表失败', 'error')
+    }
+  } catch (error) {
+    showToast(error.message || '刷新模型列表失败', 'error')
+  }
+}
+
 const closeAccountUsageModal = () => {
   showAccountUsageModal.value = false
   accountUsageLoading.value = false
@@ -2753,6 +2815,7 @@ const supportedTestPlatforms = [
   'openai-responses',
   'azure-openai',
   'droid',
+  'copilot',
   'ccr'
 ]
 
@@ -2940,6 +3003,7 @@ const accountStats = computed(() => {
     { value: 'azure_openai', label: 'Azure OpenAI' },
     { value: 'bedrock', label: 'Bedrock' },
     { value: 'openai-responses', label: 'OpenAI-Responses' },
+    { value: 'copilot', label: 'Copilot' },
     { value: 'ccr', label: 'CCR' },
     { value: 'droid', label: 'Droid' }
   ]
@@ -3409,6 +3473,11 @@ const loadAccounts = async (forceReload = false) => {
         }
         case 'ccr': {
           const items = list.map((acc) => ({ ...acc, platform: 'ccr', boundApiKeysCount: 0 }))
+          allAccounts.push(...items)
+          break
+        }
+        case 'copilot': {
+          const items = list.map((acc) => ({ ...acc, platform: 'copilot', boundApiKeysCount: 0 }))
           allAccounts.push(...items)
           break
         }
@@ -3985,6 +4054,8 @@ const resolveAccountDeleteEndpoint = (account) => {
       return `/admin/azure-openai-accounts/${account.id}`
     case 'openai-responses':
       return `/admin/openai-responses-accounts/${account.id}`
+    case 'copilot':
+      return `/admin/copilot-accounts/${account.id}`
     case 'ccr':
       return `/admin/ccr-accounts/${account.id}`
     case 'gemini':
@@ -4133,6 +4204,7 @@ const batchDeleteAccounts = async () => {
 const RESET_STATUS_ENDPOINT_MAP = {
   openai: (id) => `/admin/openai-accounts/${id}/reset-status`,
   'openai-responses': (id) => `/admin/openai-responses-accounts/${id}/reset-status`,
+  copilot: (id) => `/admin/copilot-accounts/${id}/reset-status`,
   claude: (id) => `/admin/claude-accounts/${id}/reset-status`,
   'claude-console': (id) => `/admin/claude-console-accounts/${id}/reset-status`,
   ccr: (id) => `/admin/ccr-accounts/${id}/reset-status`,
@@ -4153,6 +4225,7 @@ const TOGGLE_SCHEDULABLE_ENDPOINT_MAP = {
   azure_openai: (id) => `/admin/azure-openai-accounts/${id}/toggle-schedulable`,
   'azure-openai': (id) => `/admin/azure-openai-accounts/${id}/toggle-schedulable`,
   'openai-responses': (id) => `/admin/openai-responses-accounts/${id}/toggle-schedulable`,
+  copilot: (id) => `/admin/copilot-accounts/${id}/toggle-schedulable`,
   ccr: (id) => `/admin/ccr-accounts/${id}/toggle-schedulable`,
   droid: (id) => `/admin/droid-accounts/${id}/toggle-schedulable`,
   'gemini-api': (id) => `/admin/gemini-api-accounts/${id}/toggle-schedulable`
@@ -5190,6 +5263,9 @@ const handleSaveAccountExpiry = async ({ accountId, expiresAt }) => {
         break
       case 'ccr':
         endpoint = `/admin/ccr-accounts/${accountId}`
+        break
+      case 'copilot':
+        endpoint = `/admin/copilot-accounts/${accountId}`
         break
       case 'openai':
         endpoint = `/admin/openai-accounts/${accountId}` // 使用 :id

@@ -4,6 +4,7 @@ const claudeAccountService = require('../../services/account/claudeAccountServic
 const claudeConsoleAccountService = require('../../services/account/claudeConsoleAccountService')
 const bedrockAccountService = require('../../services/account/bedrockAccountService')
 const ccrAccountService = require('../../services/account/ccrAccountService')
+const copilotAccountService = require('../../services/account/copilotAccountService')
 const geminiAccountService = require('../../services/account/geminiAccountService')
 const droidAccountService = require('../../services/account/droidAccountService')
 const openaiResponsesAccountService = require('../../services/account/openaiResponsesAccountService')
@@ -35,6 +36,7 @@ router.get('/dashboard', authenticateAdmin, async (req, res) => {
       bedrockAccountsResult,
       openaiAccounts,
       ccrAccounts,
+      copilotAccounts,
       openaiResponsesAccounts,
       droidAccounts,
       todayStats,
@@ -47,6 +49,7 @@ router.get('/dashboard', authenticateAdmin, async (req, res) => {
       bedrockAccountService.getAllAccounts(),
       redis.getAllOpenAIAccounts(),
       ccrAccountService.getAllAccounts(),
+      copilotAccountService.getAllAccounts(),
       openaiResponsesAccountService.getAllAccounts(true),
       droidAccountService.getAllAccounts(),
       redis.getTodayStats(),
@@ -184,6 +187,7 @@ router.get('/dashboard', authenticateAdmin, async (req, res) => {
     const bedrockStats = countAccountStats(bedrockAccounts)
     const openaiStats = countAccountStats(openaiAccounts, { isStringType: true })
     const ccrStats = countAccountStats(ccrAccounts)
+    const copilotStats = countAccountStats(copilotAccounts)
     const openaiResponsesStats = countAccountStats(openaiResponsesAccounts, { isStringType: true })
 
     const dashboard = {
@@ -198,6 +202,7 @@ router.get('/dashboard', authenticateAdmin, async (req, res) => {
           bedrockAccounts.length +
           openaiAccounts.length +
           openaiResponsesAccounts.length +
+          copilotAccounts.length +
           ccrAccounts.length,
         normalAccounts:
           claudeStats.normal +
@@ -206,6 +211,7 @@ router.get('/dashboard', authenticateAdmin, async (req, res) => {
           bedrockStats.normal +
           openaiStats.normal +
           openaiResponsesStats.normal +
+          copilotStats.normal +
           ccrStats.normal,
         abnormalAccounts:
           claudeStats.abnormal +
@@ -214,6 +220,7 @@ router.get('/dashboard', authenticateAdmin, async (req, res) => {
           bedrockStats.abnormal +
           openaiStats.abnormal +
           openaiResponsesStats.abnormal +
+          copilotStats.abnormal +
           ccrStats.abnormal +
           abnormalDroidAccounts,
         pausedAccounts:
@@ -223,6 +230,7 @@ router.get('/dashboard', authenticateAdmin, async (req, res) => {
           bedrockStats.paused +
           openaiStats.paused +
           openaiResponsesStats.paused +
+          copilotStats.paused +
           ccrStats.paused +
           pausedDroidAccounts,
         rateLimitedAccounts:
@@ -232,6 +240,7 @@ router.get('/dashboard', authenticateAdmin, async (req, res) => {
           bedrockStats.rateLimited +
           openaiStats.rateLimited +
           openaiResponsesStats.rateLimited +
+          copilotStats.rateLimited +
           ccrStats.rateLimited +
           rateLimitedDroidAccounts,
         // 各平台详细统计
@@ -278,6 +287,13 @@ router.get('/dashboard', authenticateAdmin, async (req, res) => {
             paused: ccrStats.paused,
             rateLimited: ccrStats.rateLimited
           },
+          copilot: {
+            total: copilotAccounts.length,
+            normal: copilotStats.normal,
+            abnormal: copilotStats.abnormal,
+            paused: copilotStats.paused,
+            rateLimited: copilotStats.rateLimited
+          },
           'openai-responses': {
             total: openaiResponsesAccounts.length,
             normal: openaiResponsesStats.normal,
@@ -301,6 +317,7 @@ router.get('/dashboard', authenticateAdmin, async (req, res) => {
           bedrockStats.normal +
           openaiStats.normal +
           openaiResponsesStats.normal +
+          copilotStats.normal +
           ccrStats.normal +
           normalDroidAccounts,
         totalClaudeAccounts: claudeAccounts.length + claudeConsoleAccounts.length,

@@ -8,7 +8,9 @@ const unifiedOpenAIScheduler = require('../services/scheduler/unifiedOpenAISched
 const openaiAccountService = require('../services/account/openaiAccountService')
 const openaiResponsesAccountService = require('../services/account/openaiResponsesAccountService')
 const openaiResponsesRelayService = require('../services/relay/openaiResponsesRelayService')
+const copilotRelayService = require('../services/relay/copilotRelayService')
 const apiKeyService = require('../services/apiKeyService')
+const copilotScheduler = require('../services/scheduler/copilotScheduler')
 const redis = require('../models/redis')
 const crypto = require('crypto')
 const ProxyHelper = require('../utils/proxyHelper')
@@ -21,6 +23,7 @@ const {
   extractOpenAICacheReadTokens
 } = require('../utils/requestDetailHelper')
 const requestBodyRuleService = require('../services/requestBodyRuleService')
+const { parseVendorPrefixedModel } = require('../utils/modelHelper')
 
 // Codex CLI 系统提示词（非 Codex CLI 客户端请求时注入，统一端点也使用）
 const CODEX_CLI_INSTRUCTIONS =
@@ -303,14 +306,20 @@ const handleResponses = async (req, res) => {
   try {
     // 从中间件获取 API Key 数据
     const apiKeyData = req.apiKey || {}
+    const parsedVendorModel = parseVendorPrefixedModel(req.body?.model)
+    const isCopilotRequest = parsedVendorModel.vendor === 'copilot'
+    const requiredService = isCopilotRequest ? 'copilot' : 'openai'
+    const hasRequiredPermission = isCopilotRequest
+      ? apiKeyService.hasPermission(apiKeyData?.permissions, 'copilot')
+      : checkOpenAIPermissions(apiKeyData)
 
-    if (!checkOpenAIPermissions(apiKeyData)) {
+    if (!hasRequiredPermission) {
       logger.security(
-        `🚫 API Key ${apiKeyData.id || 'unknown'} 缺少 OpenAI 权限，拒绝访问 ${req.originalUrl}`
+        `🚫 API Key ${apiKeyData.id || 'unknown'} 缺少 ${requiredService} 权限，拒绝访问 ${req.originalUrl}`
       )
       return res.status(403).json({
         error: {
-          message: 'This API key does not have permission to access OpenAI',
+          message: `This API key does not have permission to access ${requiredService}`,
           type: 'permission_denied',
           code: 'permission_denied'
         }
@@ -327,7 +336,11 @@ const handleResponses = async (req, res) => {
     const compactRoute = isCompactResponsesRoute(req)
     const shouldUseToggleControlledFlow = standardResponsesRoute && !compactRoute
 
-    if (shouldUseToggleControlledFlow) {
+    if (isCopilotRequest) {
+      logger.info(
+        '🔀 Copilot Responses request detected, forwarding payload without Codex adaptation'
+      )
+    } else if (shouldUseToggleControlledFlow) {
       const shouldApplyCodexAdaptation =
         apiKeyData.enableOpenAIResponsesCodexAdaptation === true && !isCodexCLI
       const shouldApplyPayloadRules = apiKeyData.enableOpenAIResponsesPayloadRules === true
@@ -376,13 +389,26 @@ const handleResponses = async (req, res) => {
     sessionHash = sessionId ? crypto.createHash('sha256').update(sessionId).digest('hex') : null
 
     const requestedModel = req.body?.model || null
-    const schedulerModel = getCodexCompatibleModel(requestedModel)
+    const schedulerModel = isCopilotRequest
+      ? requestedModel
+      : getCodexCompatibleModel(requestedModel)
     const isStream = req.body?.stream !== false // 默认为流式（兼容现有行为）
 
     if (schedulerModel !== requestedModel) {
       logger.info(
         `🧭 Using Codex-compatible model ${schedulerModel} for account selection (requested: ${requestedModel})`
       )
+    }
+
+    if (isCopilotRequest) {
+      const selection = await copilotScheduler.selectAccountForApiKey(
+        apiKeyData,
+        sessionHash,
+        requestedModel
+      )
+      ;({ accountId } = selection)
+      accountType = 'copilot'
+      return await copilotRelayService.handleResponsesRequest(req, res, selection, apiKeyData)
     }
 
     // 使用调度器选择账户

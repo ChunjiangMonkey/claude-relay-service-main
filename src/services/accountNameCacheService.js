@@ -57,6 +57,7 @@ class AccountNameCacheService {
       const bedrockAccountService = require('./account/bedrockAccountService')
       const droidAccountService = require('./account/droidAccountService')
       const ccrAccountService = require('./account/ccrAccountService')
+      const copilotAccountService = require('./account/copilotAccountService')
       const accountGroupService = require('./accountGroupService')
 
       // 可选服务（可能不存在）
@@ -85,6 +86,7 @@ class AccountNameCacheService {
         bedrockAccountService.getAllAccounts(),
         droidAccountService.getAllAccounts(),
         ccrAccountService.getAllAccounts(),
+        copilotAccountService.getAllAccounts(),
         accountGroupService.getAllGroups()
       ])
 
@@ -99,7 +101,8 @@ class AccountNameCacheService {
       const bedrockResult = results[7].status === 'fulfilled' ? results[7].value : { accounts: [] }
       const droidAccounts = results[8].status === 'fulfilled' ? results[8].value : []
       const ccrAccounts = results[9].status === 'fulfilled' ? results[9].value : []
-      const groups = results[10].status === 'fulfilled' ? results[10].value : []
+      const copilotAccounts = results[10].status === 'fulfilled' ? results[10].value : []
+      const groups = results[11].status === 'fulfilled' ? results[11].value : []
 
       // Bedrock 返回格式特殊处理
       const bedrockAccounts = Array.isArray(bedrockResult)
@@ -133,6 +136,7 @@ class AccountNameCacheService {
       addAccounts(bedrockAccounts, 'bedrock')
       addAccounts(droidAccounts, 'droid')
       addAccounts(ccrAccounts, 'ccr')
+      addAccounts(copilotAccounts, 'copilot')
 
       // 填充账户组缓存
       if (Array.isArray(groups)) {

@@ -3,8 +3,10 @@ const claudeRelayService = require('../services/relay/claudeRelayService')
 const claudeConsoleRelayService = require('../services/relay/claudeConsoleRelayService')
 const bedrockRelayService = require('../services/relay/bedrockRelayService')
 const ccrRelayService = require('../services/relay/ccrRelayService')
+const copilotRelayService = require('../services/relay/copilotRelayService')
 const bedrockAccountService = require('../services/account/bedrockAccountService')
 const unifiedClaudeScheduler = require('../services/scheduler/unifiedClaudeScheduler')
+const copilotScheduler = require('../services/scheduler/copilotScheduler')
 const apiKeyService = require('../services/apiKeyService')
 const { authenticateApiKey } = require('../middleware/auth')
 const logger = require('../utils/logger')
@@ -139,8 +141,17 @@ async function handleMessagesRequest(req, res) {
     const startTime = Date.now()
 
     const forcedVendor = req._anthropicVendor || null
+    const parsedVendorModel = parseVendorPrefixedModel(req.body?.model)
+    const isCopilotRequest =
+      parsedVendorModel.vendor === 'copilot' &&
+      forcedVendor !== 'gemini-cli' &&
+      forcedVendor !== 'antigravity'
     const requiredService =
-      forcedVendor === 'gemini-cli' || forcedVendor === 'antigravity' ? 'gemini' : 'claude'
+      forcedVendor === 'gemini-cli' || forcedVendor === 'antigravity'
+        ? 'gemini'
+        : isCopilotRequest
+          ? 'copilot'
+          : 'claude'
 
     if (!apiKeyService.hasPermission(req.apiKey?.permissions, requiredService)) {
       return res.status(403).json({
@@ -149,7 +160,9 @@ async function handleMessagesRequest(req, res) {
           message:
             requiredService === 'gemini'
               ? '此 API Key 无权访问 Gemini 服务'
-              : '此 API Key 无权访问 Claude 服务'
+              : requiredService === 'copilot'
+                ? '此 API Key 无权访问 Copilot 服务'
+                : '此 API Key 无权访问 Claude 服务'
         }
       })
     }
@@ -296,7 +309,7 @@ async function handleMessagesRequest(req, res) {
       try {
         const globalBindingEnabled = await claudeRelayConfigService.isGlobalSessionBindingEnabled()
 
-        if (globalBindingEnabled) {
+        if (globalBindingEnabled && !isCopilotRequest) {
           const originalSessionId = claudeRelayConfigService.extractOriginalSessionId(req.body)
 
           if (originalSessionId) {
@@ -342,14 +355,17 @@ async function handleMessagesRequest(req, res) {
       const requestedModel = req.body.model
       let accountId
       let accountType
+      let accountSelection
       try {
-        const selection = await unifiedClaudeScheduler.selectAccountForApiKey(
-          req.apiKey,
-          sessionHash,
-          requestedModel,
-          forcedAccount
-        )
-        ;({ accountId, accountType } = selection)
+        accountSelection = isCopilotRequest
+          ? await copilotScheduler.selectAccountForApiKey(req.apiKey, sessionHash, requestedModel)
+          : await unifiedClaudeScheduler.selectAccountForApiKey(
+              req.apiKey,
+              sessionHash,
+              requestedModel,
+              forcedAccount
+            )
+        ;({ accountId, accountType } = accountSelection)
       } catch (error) {
         // 处理会话绑定账户不可用的错误
         if (error.code === 'SESSION_BINDING_ACCOUNT_UNAVAILABLE') {
@@ -789,6 +805,94 @@ async function handleMessagesRequest(req, res) {
           }
           return undefined
         }
+      } else if (accountType === 'copilot') {
+        const _apiKeyIdCopilot = req.apiKey.id
+        const _rateLimitInfoCopilot = req.rateLimitInfo
+        const _requestBodyCopilot = req.body
+        const _apiKeyCopilot = req.apiKey
+        const _headersCopilot = req.headers
+
+        await copilotRelayService.relayAnthropicStreamRequestWithUsageCapture(
+          _requestBodyCopilot,
+          _apiKeyCopilot,
+          res,
+          _headersCopilot,
+          (usageData) => {
+            if (
+              usageData &&
+              usageData.input_tokens !== undefined &&
+              usageData.output_tokens !== undefined
+            ) {
+              const inputTokens = usageData.input_tokens || 0
+              const outputTokens = usageData.output_tokens || 0
+              let cacheCreateTokens = usageData.cache_creation_input_tokens || 0
+              let ephemeral5mTokens = 0
+              let ephemeral1hTokens = 0
+
+              if (usageData.cache_creation && typeof usageData.cache_creation === 'object') {
+                ephemeral5mTokens = usageData.cache_creation.ephemeral_5m_input_tokens || 0
+                ephemeral1hTokens = usageData.cache_creation.ephemeral_1h_input_tokens || 0
+                cacheCreateTokens = ephemeral5mTokens + ephemeral1hTokens
+              }
+
+              const cacheReadTokens = usageData.cache_read_input_tokens || 0
+              const model = usageData.model || accountSelection?.resolvedModel || 'unknown'
+              const usageObject = {
+                input_tokens: inputTokens,
+                output_tokens: outputTokens,
+                cache_creation_input_tokens: cacheCreateTokens,
+                cache_read_input_tokens: cacheReadTokens,
+                requested_model: accountSelection?.requestedModelWithPrefix || requestedModel,
+                resolved_model: accountSelection?.resolvedModel || model
+              }
+
+              if (ephemeral5mTokens > 0 || ephemeral1hTokens > 0) {
+                usageObject.cache_creation = {
+                  ephemeral_5m_input_tokens: ephemeral5mTokens,
+                  ephemeral_1h_input_tokens: ephemeral1hTokens
+                }
+              }
+
+              const detailRequestBody = {
+                ..._requestBodyCopilot,
+                model: accountSelection?.requestedModelWithPrefix || _requestBodyCopilot.model,
+                resolved_model: accountSelection?.resolvedModel || model
+              }
+
+              apiKeyService
+                .recordUsageWithDetails(
+                  _apiKeyIdCopilot,
+                  usageObject,
+                  model,
+                  usageData.accountId || accountId,
+                  'copilot',
+                  createRequestDetailMeta(req, {
+                    requestBody: detailRequestBody,
+                    stream: true,
+                    statusCode: res.statusCode
+                  })
+                )
+                .then((costs) => {
+                  queueRateLimitUpdate(
+                    _rateLimitInfoCopilot,
+                    { inputTokens, outputTokens, cacheCreateTokens, cacheReadTokens },
+                    model,
+                    'copilot-stream',
+                    _apiKeyIdCopilot,
+                    'copilot',
+                    costs
+                  )
+                })
+                .catch((error) => {
+                  logger.error('❌ Failed to record Copilot stream usage:', error)
+                })
+
+              usageDataCaptured = true
+            }
+          },
+          accountSelection,
+          req
+        )
       } else if (accountType === 'ccr') {
         // CCR账号使用CCR转发服务（需要传递accountId）
         // 🧹 内存优化：提取需要的值
@@ -1008,7 +1112,7 @@ async function handleMessagesRequest(req, res) {
       try {
         const globalBindingEnabled = await claudeRelayConfigService.isGlobalSessionBindingEnabled()
 
-        if (globalBindingEnabled) {
+        if (globalBindingEnabled && !isCopilotRequest) {
           const originalSessionId = claudeRelayConfigService.extractOriginalSessionId(req.body)
 
           if (originalSessionId) {
@@ -1053,14 +1157,17 @@ async function handleMessagesRequest(req, res) {
       const requestedModel = req.body.model
       let accountId
       let accountType
+      let accountSelectionNonStream
       try {
-        const selection = await unifiedClaudeScheduler.selectAccountForApiKey(
-          req.apiKey,
-          sessionHash,
-          requestedModel,
-          forcedAccountNonStream
-        )
-        ;({ accountId, accountType } = selection)
+        accountSelectionNonStream = isCopilotRequest
+          ? await copilotScheduler.selectAccountForApiKey(req.apiKey, sessionHash, requestedModel)
+          : await unifiedClaudeScheduler.selectAccountForApiKey(
+              req.apiKey,
+              sessionHash,
+              requestedModel,
+              forcedAccountNonStream
+            )
+        ;({ accountId, accountType } = accountSelectionNonStream)
       } catch (error) {
         if (error.code === 'SESSION_BINDING_ACCOUNT_UNAVAILABLE') {
           const errorMessage = await claudeRelayConfigService.getSessionBindingErrorMessage()
@@ -1192,6 +1299,18 @@ async function handleMessagesRequest(req, res) {
             accountId
           }
         }
+      } else if (accountType === 'copilot') {
+        logger.debug(
+          `[DEBUG] Calling copilotRelayService.relayAnthropicRequest with accountId: ${accountId}`
+        )
+        response = await copilotRelayService.relayAnthropicRequest(
+          _requestBodyNonStream,
+          _apiKeyNonStream,
+          req,
+          res,
+          _headersNonStream,
+          accountSelectionNonStream
+        )
       } else if (accountType === 'ccr') {
         // CCR账号使用CCR转发服务
         logger.debug(`[DEBUG] Calling ccrRelayService.relayRequest with accountId: ${accountId}`)
@@ -1269,6 +1388,11 @@ async function handleMessagesRequest(req, res) {
             cache_creation_input_tokens: cacheCreateTokens,
             cache_read_input_tokens: cacheReadTokens
           }
+          if (accountType === 'copilot') {
+            usageObject.requested_model =
+              accountSelectionNonStream?.requestedModelWithPrefix || _requestBodyNonStream.model
+            usageObject.resolved_model = accountSelectionNonStream?.resolvedModel || model
+          }
 
           // 添加请求元信息
           const requestBetaHeader =
@@ -1298,6 +1422,16 @@ async function handleMessagesRequest(req, res) {
 
           // 记录真实的token使用量（包含模型信息和所有4种token以及账户ID）
           const { accountId: responseAccountId } = response
+          const requestBodyForDetail =
+            accountType === 'copilot'
+              ? {
+                  ..._requestBodyNonStream,
+                  model:
+                    accountSelectionNonStream?.requestedModelWithPrefix ||
+                    _requestBodyNonStream.model,
+                  resolved_model: accountSelectionNonStream?.resolvedModel || model
+                }
+              : _requestBodyNonStream
           const nonStreamCosts = await apiKeyService.recordUsageWithDetails(
             _apiKeyIdNonStream,
             usageObject,
@@ -1305,7 +1439,7 @@ async function handleMessagesRequest(req, res) {
             responseAccountId,
             accountType,
             createRequestDetailMeta(req, {
-              requestBody: _requestBodyNonStream,
+              requestBody: requestBodyForDetail,
               stream: false,
               statusCode: response.statusCode
             })
@@ -1673,8 +1807,17 @@ router.get('/v1/organizations/:org_id/usage', authenticateApiKey, async (req, re
 router.post('/v1/messages/count_tokens', authenticateApiKey, async (req, res) => {
   // 按路径强制分流到 Gemini OAuth 账户（避免 model 前缀混乱）
   const forcedVendor = req._anthropicVendor || null
+  const parsedVendorModel = parseVendorPrefixedModel(req.body?.model)
+  const isCopilotRequest =
+    parsedVendorModel.vendor === 'copilot' &&
+    forcedVendor !== 'gemini-cli' &&
+    forcedVendor !== 'antigravity'
   const requiredService =
-    forcedVendor === 'gemini-cli' || forcedVendor === 'antigravity' ? 'gemini' : 'claude'
+    forcedVendor === 'gemini-cli' || forcedVendor === 'antigravity'
+      ? 'gemini'
+      : isCopilotRequest
+        ? 'copilot'
+        : 'claude'
 
   if (!apiKeyService.hasPermission(req.apiKey?.permissions, requiredService)) {
     return res.status(403).json({
@@ -1683,7 +1826,9 @@ router.post('/v1/messages/count_tokens', authenticateApiKey, async (req, res) =>
         message:
           requiredService === 'gemini'
             ? 'This API key does not have permission to access Gemini'
-            : 'This API key does not have permission to access Claude'
+            : requiredService === 'copilot'
+              ? 'This API key does not have permission to access Copilot'
+              : 'This API key does not have permission to access Claude'
       }
     })
   }
@@ -1692,14 +1837,15 @@ router.post('/v1/messages/count_tokens', authenticateApiKey, async (req, res) =>
     return await handleAnthropicCountTokensToGemini(req, res, { vendor: forcedVendor })
   }
 
-  // 🔗 会话绑定验证（与 messages 端点保持一致）
-  const originalSessionId = claudeRelayConfigService.extractOriginalSessionId(req.body)
-  const sessionValidation = await claudeRelayConfigService.validateNewSession(
-    req.body,
-    originalSessionId
-  )
+  // 🔗 会话绑定验证（与 messages 端点保持一致，Copilot 独立调度不复用 Claude 绑定）
+  const originalSessionId = isCopilotRequest
+    ? null
+    : claudeRelayConfigService.extractOriginalSessionId(req.body)
+  const sessionValidation = isCopilotRequest
+    ? { valid: true, isNewSession: false }
+    : await claudeRelayConfigService.validateNewSession(req.body, originalSessionId)
 
-  if (!sessionValidation.valid) {
+  if (!isCopilotRequest && !sessionValidation.valid) {
     logger.warn(
       `🚫 Session binding validation failed (count_tokens): ${sessionValidation.code} for session ${originalSessionId}`
     )
@@ -1712,7 +1858,7 @@ router.post('/v1/messages/count_tokens', authenticateApiKey, async (req, res) =>
   }
 
   // 🔗 检测旧会话（污染的会话）- 仅对需要绑定的新会话检查
-  if (sessionValidation.isNewSession && originalSessionId) {
+  if (!isCopilotRequest && sessionValidation.isNewSession && originalSessionId) {
     if (isOldSession(req.body)) {
       const cfg = await claudeRelayConfigService.getConfig()
       logger.warn(
@@ -1735,11 +1881,36 @@ router.post('/v1/messages/count_tokens', authenticateApiKey, async (req, res) =>
   let attempt = 0
 
   const processRequest = async () => {
-    const { accountId, accountType } = await unifiedClaudeScheduler.selectAccountForApiKey(
-      req.apiKey,
-      sessionHash,
-      requestedModel
-    )
+    const selection = isCopilotRequest
+      ? await copilotScheduler.selectAccountForApiKey(req.apiKey, sessionHash, requestedModel)
+      : await unifiedClaudeScheduler.selectAccountForApiKey(req.apiKey, sessionHash, requestedModel)
+    const { accountId, accountType } = selection
+
+    if (accountType === 'copilot') {
+      const response = await copilotRelayService.relayAnthropicRequest(
+        req.body,
+        req.apiKey,
+        req,
+        res,
+        req.headers,
+        selection,
+        { path: '/v1/messages/count_tokens', skipUsageRecord: true }
+      )
+
+      res.status(response.statusCode)
+      const skipHeaders = ['content-encoding', 'transfer-encoding', 'content-length']
+      Object.keys(response.headers).forEach((key) => {
+        if (!skipHeaders.includes(key.toLowerCase())) {
+          res.setHeader(key, response.headers[key])
+        }
+      })
+      try {
+        res.json(JSON.parse(response.body))
+      } catch (_) {
+        res.send(response.body)
+      }
+      return { fallbackResponse: false }
+    }
 
     if (accountType === 'ccr') {
       throw Object.assign(new Error('Token counting is not supported for CCR accounts'), {
