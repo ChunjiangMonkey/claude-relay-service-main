@@ -71,7 +71,7 @@
               <!-- 平台分组选择器 -->
               <div class="space-y-3">
                 <!-- 分组选择器 -->
-                <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <div class="grid grid-cols-2 gap-2 sm:grid-cols-5">
                   <!-- Claude 分组 -->
                   <div
                     class="group relative cursor-pointer overflow-hidden rounded-lg border-2 transition-all duration-200"
@@ -140,6 +140,37 @@
                         OpenAI
                       </h4>
                       <p class="text-xs text-gray-600 dark:text-gray-400">GPT 系列</p>
+                    </div>
+                  </div>
+
+                  <!-- Copilot 分组 -->
+                  <div
+                    class="group relative cursor-pointer overflow-hidden rounded-lg border-2 transition-all duration-200"
+                    :class="[
+                      platformGroup === 'copilot'
+                        ? 'border-amber-500 bg-gradient-to-br from-amber-50 to-orange-50 shadow-md dark:from-amber-900/20 dark:to-orange-900/20'
+                        : 'border-gray-200 bg-white hover:border-amber-300 hover:shadow dark:border-gray-700 dark:bg-gray-800 dark:hover:border-amber-600'
+                    ]"
+                    @click="selectPlatformGroup('copilot')"
+                  >
+                    <div class="p-3">
+                      <div class="flex items-center justify-between">
+                        <div
+                          class="flex h-8 w-8 items-center justify-center rounded-md bg-gradient-to-br from-amber-500 to-orange-500"
+                        >
+                          <i class="fas fa-code-branch text-sm text-white"></i>
+                        </div>
+                        <div
+                          v-if="platformGroup === 'copilot'"
+                          class="flex h-5 w-5 items-center justify-center rounded-full bg-amber-500"
+                        >
+                          <i class="fas fa-check text-xs text-white"></i>
+                        </div>
+                      </div>
+                      <h4 class="mt-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
+                        Copilot
+                      </h4>
+                      <p class="text-xs text-gray-600 dark:text-gray-400">双协议中转</p>
                     </div>
                   </div>
 
@@ -343,6 +374,44 @@
                       </label>
                     </template>
 
+                    <!-- Copilot 子选项 -->
+                    <template v-if="platformGroup === 'copilot'">
+                      <label
+                        class="group relative flex cursor-pointer items-center rounded-md border p-2 transition-all"
+                        :class="[
+                          form.platform === 'copilot'
+                            ? 'border-amber-500 bg-amber-50 dark:border-amber-400 dark:bg-amber-900/30'
+                            : 'border-gray-300 bg-white hover:border-amber-400 hover:bg-amber-50/50 dark:border-gray-600 dark:bg-gray-700 dark:hover:border-amber-500 dark:hover:bg-amber-900/20'
+                        ]"
+                      >
+                        <input
+                          v-model="form.platform"
+                          class="sr-only"
+                          type="radio"
+                          value="copilot"
+                        />
+                        <div class="flex items-center gap-2">
+                          <i
+                            class="fas fa-code-branch text-sm text-amber-600 dark:text-amber-400"
+                          ></i>
+                          <div>
+                            <span class="block text-xs font-medium text-gray-900 dark:text-gray-100"
+                              >Copilot API</span
+                            >
+                            <span class="text-xs text-gray-500 dark:text-gray-400"
+                              >Anthropic + Responses</span
+                            >
+                          </div>
+                        </div>
+                        <div
+                          v-if="form.platform === 'copilot'"
+                          class="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-amber-500"
+                        >
+                          <i class="fas fa-check text-xs text-white"></i>
+                        </div>
+                      </label>
+                    </template>
+
                     <!-- OpenAI 子选项 -->
                     <template v-if="platformGroup === 'openai'">
                       <label
@@ -406,41 +475,6 @@
                         <div
                           v-if="form.platform === 'openai-responses'"
                           class="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-teal-500"
-                        >
-                          <i class="fas fa-check text-xs text-white"></i>
-                        </div>
-                      </label>
-
-                      <label
-                        class="group relative flex cursor-pointer items-center rounded-md border p-2 transition-all"
-                        :class="[
-                          form.platform === 'copilot'
-                            ? 'border-amber-500 bg-amber-50 dark:border-amber-400 dark:bg-amber-900/30'
-                            : 'border-gray-300 bg-white hover:border-amber-400 hover:bg-amber-50/50 dark:border-gray-600 dark:bg-gray-700 dark:hover:border-amber-500 dark:hover:bg-amber-900/20'
-                        ]"
-                      >
-                        <input
-                          v-model="form.platform"
-                          class="sr-only"
-                          type="radio"
-                          value="copilot"
-                        />
-                        <div class="flex items-center gap-2">
-                          <i
-                            class="fas fa-code-branch text-sm text-amber-600 dark:text-amber-400"
-                          ></i>
-                          <div>
-                            <span class="block text-xs font-medium text-gray-900 dark:text-gray-100"
-                              >Copilot</span
-                            >
-                            <span class="text-xs text-gray-500 dark:text-gray-400"
-                              >内部 Copilot API</span
-                            >
-                          </div>
-                        </div>
-                        <div
-                          v-if="form.platform === 'copilot'"
-                          class="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-amber-500"
                         >
                           <i class="fas fa-check text-xs text-white"></i>
                         </div>
@@ -4189,6 +4223,8 @@ const showApiKeyManagement = ref(false)
 const determinePlatformGroup = (platform) => {
   if (['claude', 'claude-console', 'ccr', 'bedrock'].includes(platform)) {
     return 'claude'
+  } else if (platform === 'copilot') {
+    return 'copilot'
   } else if (['openai', 'openai-responses', 'azure_openai'].includes(platform)) {
     return 'openai'
   } else if (['gemini', 'gemini-antigravity', 'gemini-api'].includes(platform)) {
@@ -4708,6 +4744,8 @@ const selectPlatformGroup = (group) => {
   // 根据分组自动选择默认平台
   if (group === 'claude') {
     form.value.platform = 'claude'
+  } else if (group === 'copilot') {
+    form.value.platform = 'copilot'
   } else if (group === 'openai') {
     form.value.platform = 'openai'
   } else if (group === 'gemini') {

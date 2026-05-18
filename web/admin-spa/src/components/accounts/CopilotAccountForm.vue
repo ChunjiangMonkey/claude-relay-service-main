@@ -24,6 +24,48 @@
         </div>
 
         <div class="space-y-6">
+          <div
+            class="rounded-xl border border-amber-200 bg-amber-50/80 p-4 text-sm dark:border-amber-800/60 dark:bg-amber-950/30"
+          >
+            <div
+              class="mb-3 flex items-center gap-2 font-semibold text-amber-800 dark:text-amber-300"
+            >
+              <i class="fas fa-route" />
+              <span>路由与模型策略</span>
+            </div>
+            <div class="grid gap-3 text-xs text-amber-800 dark:text-amber-200 md:grid-cols-3">
+              <div class="rounded-lg bg-white/70 p-3 dark:bg-gray-900/40">
+                <div class="mb-1 font-semibold">入口路由</div>
+                <p>
+                  Anthropic 请求使用 <code>/v1/messages</code>，OpenAI 请求使用
+                  <code>/v1/responses</code>。
+                </p>
+                <p class="mt-1">
+                  两类请求都必须把模型写成 <code>copilot,*</code> 才会进入 Copilot 池。
+                </p>
+              </div>
+              <div class="rounded-lg bg-white/70 p-3 dark:bg-gray-900/40">
+                <div class="mb-1 font-semibold">模型解析</div>
+                <p>顺序固定：手动映射 → 动态模型 exact match → 内置别名 → 完整模型名直通。</p>
+                <p class="mt-1">
+                  别名包括
+                  <code>default</code
+                  >、<code>opus</code>、<code>sonnet</code>、<code>haiku</code>、<code>gpt</code>、<code>codex</code>。
+                </p>
+              </div>
+              <div class="rounded-lg bg-white/70 p-3 dark:bg-gray-900/40">
+                <div class="mb-1 font-semibold">权限与调度</div>
+                <p>
+                  API Key 需要 <code>copilot</code> 权限；普通 <code>claude</code> 或
+                  <code>openai</code> 权限不会放行。
+                </p>
+                <p class="mt-1">
+                  Copilot 使用独立共享池和 sticky session，不复用 Claude/OpenAI/CCR 账号池。
+                </p>
+              </div>
+            </div>
+          </div>
+
           <!-- 基本信息 -->
           <div>
             <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300"

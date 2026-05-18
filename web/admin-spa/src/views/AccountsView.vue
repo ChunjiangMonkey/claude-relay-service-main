@@ -2496,9 +2496,14 @@ const platformHierarchy = [
     children: [
       { value: 'openai', label: 'OpenAI 官方', icon: 'fa-openai' },
       { value: 'openai-responses', label: 'OpenAI-Responses (Codex)', icon: 'fa-server' },
-      { value: 'copilot', label: 'Copilot API', icon: 'fa-code-branch' },
       { value: 'azure_openai', label: 'Azure OpenAI', icon: 'fab fa-microsoft' }
     ]
+  },
+  {
+    value: 'group-copilot',
+    label: 'Copilot（全部）',
+    icon: 'fa-code-branch',
+    children: [{ value: 'copilot', label: 'Copilot API', icon: 'fa-code-branch' }]
   },
   {
     value: 'group-gemini',
@@ -2520,7 +2525,8 @@ const platformHierarchy = [
 // 平台分组映射
 const platformGroupMap = {
   'group-claude': ['claude', 'claude-console', 'bedrock', 'ccr'],
-  'group-openai': ['openai', 'openai-responses', 'copilot', 'azure_openai'],
+  'group-openai': ['openai', 'openai-responses', 'azure_openai'],
+  'group-copilot': ['copilot'],
   'group-gemini': ['gemini', 'gemini-api'],
   'group-droid': ['droid']
 }
