@@ -1371,7 +1371,10 @@ function patchHttpsRequest() {
       const contentTypeRaw =
         responseHeaders['content-type'] || responseHeaders['Content-Type'] || ''
       const contentType = String(contentTypeRaw || '').toLowerCase()
-      const isStreamResponse = contentType.includes('text/event-stream')
+      const statusCode = Number(res.statusCode || 0)
+      const requestDeclaredStream =
+        requestRecord.requestStream === true && statusCode >= 200 && statusCode < 400
+      const isStreamResponse = contentType.includes('text/event-stream') || requestDeclaredStream
 
       const streamState = createStreamState()
       const sseTextParser = isStreamResponse ? createOpenaiSseTextParser(streamState) : null
