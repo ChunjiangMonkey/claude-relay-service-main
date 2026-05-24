@@ -288,6 +288,131 @@ describe('capture hooks memory-safe semantic output', () => {
     expect(summaryRows[0].decode_error).toBeNull()
   })
 
+  test('anthropic stream request captures SSE when content-type is missing', async () => {
+    process.env.ANTHROPIC_CAPTURE_ENABLED = 'true'
+    process.env.ANTHROPIC_CAPTURE_DIR = tempDir
+    process.env.ANTHROPIC_CAPTURE_INCLUDE_THINKING = 'true'
+    process.env.ANTHROPIC_CAPTURE_INCLUDE_RAW = 'false'
+
+    installFakeHttpsRequest()
+    loadCommonJsHook('extensions/anthropic-capture/hook/anthropic-hook.js')
+
+    const req = https.request({
+      protocol: 'https:',
+      hostname: 'api.anthropic.com',
+      host: 'api.anthropic.com',
+      path: '/v1/messages',
+      method: 'POST',
+      headers: {
+        'x-request-id': 'req_missing_content_type',
+        'x-relay-key-id': 'relay-key-missing-content-type'
+      }
+    })
+
+    req.write(
+      JSON.stringify({
+        model: 'claude-test',
+        stream: true,
+        messages: [{ role: 'user', content: 'hello' }]
+      })
+    )
+    req.end()
+
+    const res = new EventEmitter()
+    res.statusCode = 200
+    res.headers = {}
+    req.emit('response', res)
+
+    const sse = [
+      'event: message_start',
+      'data: {"type":"message_start","message":{"id":"msg_missing_content_type","model":"claude-test","usage":{"input_tokens":3}}}',
+      '',
+      'event: content_block_start',
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","text":"hidden thought"}}',
+      '',
+      'event: content_block_start',
+      'data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":"visible answer"}}',
+      '',
+      'event: message_delta',
+      'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}',
+      ''
+    ].join('\n')
+
+    res.emit('data', Buffer.from(sse))
+    res.emit('end')
+
+    const streamRows = await waitForJsonl(tempDir, 'anthropic-upstream-stream-final.jsonl')
+    expect(streamRows[0].stream.assistant_text_full).toBe('visible answer')
+    expect(streamRows[0].stream.thought_text_full).toBe('hidden thought')
+    expect(streamRows[0].stream.message_id).toBe('msg_missing_content_type')
+    expect(streamRows[0].stream.usage).toEqual({ input_tokens: 3, output_tokens: 4 })
+
+    const summaryRows = await waitForJsonl(tempDir, 'anthropic-upstream-responses.jsonl')
+    expect(summaryRows[0].type).toBe('anthropic_upstream_response_stream_summary')
+    expect(summaryRows[0].decode_source).toBe('identity')
+    expect(summaryRows[0].decompressed).toBe(false)
+    expect(summaryRows[0].decode_error).toBeNull()
+  })
+
+  test('anthropic stream request with json content-type stays non-stream', async () => {
+    process.env.ANTHROPIC_CAPTURE_ENABLED = 'true'
+    process.env.ANTHROPIC_CAPTURE_DIR = tempDir
+    process.env.ANTHROPIC_CAPTURE_INCLUDE_THINKING = 'true'
+    process.env.ANTHROPIC_CAPTURE_INCLUDE_RAW = 'false'
+
+    installFakeHttpsRequest()
+    loadCommonJsHook('extensions/anthropic-capture/hook/anthropic-hook.js')
+
+    const req = https.request({
+      protocol: 'https:',
+      hostname: 'api.anthropic.com',
+      host: 'api.anthropic.com',
+      path: '/v1/messages',
+      method: 'POST',
+      headers: {
+        'x-request-id': 'req_json_content_type',
+        'x-relay-key-id': 'relay-key-json-content-type'
+      }
+    })
+
+    req.write(
+      JSON.stringify({
+        model: 'claude-test',
+        stream: true,
+        messages: [{ role: 'user', content: 'hello' }]
+      })
+    )
+    req.end()
+
+    const res = new EventEmitter()
+    res.statusCode = 200
+    res.headers = {
+      'content-type': 'application/json'
+    }
+    req.emit('response', res)
+
+    const responseBody = {
+      id: 'msg_json_content_type',
+      type: 'message',
+      role: 'assistant',
+      model: 'claude-test',
+      content: [{ type: 'text', text: 'json answer' }],
+      stop_reason: 'end_turn',
+      usage: { input_tokens: 3, output_tokens: 2 }
+    }
+
+    res.emit('data', Buffer.from(JSON.stringify(responseBody)))
+    res.emit('end')
+
+    const responseRows = await waitForJsonl(tempDir, 'anthropic-upstream-responses.jsonl')
+    expect(responseRows[0].type).toBe('anthropic_upstream_response_non_stream')
+    expect(responseRows[0].response.body_json).toEqual(responseBody)
+    expect(responseRows[0].response.message_id).toBe('msg_json_content_type')
+    expect(fsSync.existsSync(path.join(tempDir, 'anthropic-upstream-stream-final.jsonl'))).toBe(
+      false
+    )
+  })
+
   test('openai non-stream captures structured response fields without body_raw by default', async () => {
     process.env.OPENAI_CAPTURE_ENABLED = 'true'
     process.env.OPENAI_CAPTURE_DIR = tempDir
