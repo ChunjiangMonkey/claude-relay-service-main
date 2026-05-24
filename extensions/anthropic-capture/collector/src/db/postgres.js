@@ -70,7 +70,7 @@ function createPostgresAdapter(config) {
         record.eventType,
         record.eventTs,
         record.sourceFile,
-        JSON.stringify(record.payload)
+        toJsonString(record.payload)
       ]
     )
 
@@ -327,8 +327,8 @@ function createPostgresAdapter(config) {
         record.traceId,
         record.upstreamRequestId,
         record.model,
-        record.assistantTextFull,
-        record.thoughtTextFull,
+        toPostgresText(record.assistantTextFull),
+        toPostgresText(record.thoughtTextFull),
         record.responseMessageId,
         toJsonString(record.toolCalls),
         toJsonString(record.usage),
@@ -641,8 +641,8 @@ function createPostgresAdapter(config) {
         record.model,
         Boolean(record.isStream),
         record.responseId,
-        record.assistantTextFull,
-        record.reasoningTextFull,
+        toPostgresText(record.assistantTextFull),
+        toPostgresText(record.reasoningTextFull),
         toJsonString(record.toolCalls),
         toJsonString(record.usageJson),
         record.inputTokens,
@@ -679,7 +679,7 @@ function createPostgresAdapter(config) {
       INSERT INTO ingest_errors (source_file, raw_line, error)
       VALUES ($1, $2, $3)
       `,
-      [record.sourceFile, record.rawLine, record.error]
+      [record.sourceFile, toPostgresText(record.rawLine), toPostgresText(record.error)]
     )
   }
 
@@ -692,7 +692,69 @@ function toJsonString(value) {
   if (value === null || value === undefined) {
     return null
   }
-  return JSON.stringify(value)
+  return JSON.stringify(sanitizePostgresJson(value))
+}
+
+function sanitizePostgresJson(value) {
+  if (typeof value === 'string') {
+    return sanitizePostgresString(value)
+  }
+  if (!value || typeof value !== 'object') {
+    return value
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizePostgresJson(item))
+  }
+
+  const output = {}
+  for (const [key, childValue] of Object.entries(value)) {
+    output[sanitizePostgresString(key)] = sanitizePostgresJson(childValue)
+  }
+  return output
+}
+
+function toPostgresText(value) {
+  if (value === null || value === undefined) {
+    return null
+  }
+  return sanitizePostgresString(String(value))
+}
+
+function sanitizePostgresString(value) {
+  let changed = false
+  let output = ''
+
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index)
+
+    if (code === 0) {
+      output += '\\u0000'
+      changed = true
+      continue
+    }
+
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1)
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        output += value[index] + value[index + 1]
+        index += 1
+        continue
+      }
+      output += '\uFFFD'
+      changed = true
+      continue
+    }
+
+    if (code >= 0xdc00 && code <= 0xdfff) {
+      output += '\uFFFD'
+      changed = true
+      continue
+    }
+
+    output += value[index]
+  }
+
+  return changed ? output : value
 }
 
 module.exports = {
