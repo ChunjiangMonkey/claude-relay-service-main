@@ -6,109 +6,346 @@ const path = require('path')
 const fs = require('fs')
 const os = require('os')
 
-// 安全的 JSON 序列化函数，处理循环引用和特殊字符
-const safeStringify = (obj, maxDepth = Infinity) => {
-  const seen = new WeakSet()
+const MAX_LOG_DEPTH = 8
+const MAX_LOG_STRING_CHARS = 2048
+const MAX_LOG_STACK_CHARS = 4000
+const MAX_LOG_ARRAY_ITEMS = 20
+const MAX_LOG_OBJECT_KEYS = 50
+const MAX_PAYLOAD_PREVIEW_CHARS = 512
+const MAX_STRING_OUTPUT_CHARS = 50000
+const TRANSPORT_OBJECTS = new Set([
+  'Socket',
+  'TLSSocket',
+  'HTTPParser',
+  'IncomingMessage',
+  'ServerResponse',
+  'ClientRequest'
+])
+const PROMPT_FIELD_NAMES = new Set([
+  'instructions',
+  'input',
+  'messages',
+  'tools',
+  'system',
+  'content',
+  'prompt',
+  'requestbody',
+  'requestbodyjson',
+  'requestbodyraw',
+  'requestjson',
+  'bodyraw',
+  'bodyjson'
+])
+const PAYLOAD_FIELD_NAMES = new Set([
+  'body',
+  'payload',
+  'data',
+  'request',
+  'response',
+  'requestbody',
+  'responsebody'
+])
+const SENSITIVE_KEY_PATTERN =
+  /^(authorization|proxy[-_]?authorization|cookie|set[-_]?cookie|password|passwd|secret|client[-_]?secret|private[-_]?key|credential|credentials|api[-_]?key|x[-_]?api[-_]?key|x[-_]?goog[-_]?api[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|session[-_]?token)$/i
 
-  const replacer = (key, value, depth = 0) => {
-    if (depth > maxDepth) {
-      return '[Max Depth Reached]'
+const cleanLogString = (value) => {
+  try {
+    return (
+      String(value)
+        // eslint-disable-next-line no-control-regex
+        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
+        .replace(/[\uD800-\uDFFF]/g, '')
+        // eslint-disable-next-line no-control-regex
+        .replace(/\u0000/g, '')
+    )
+  } catch (error) {
+    return '[Invalid String Data]'
+  }
+}
+
+const truncateCleanString = (value, maxChars = MAX_LOG_STRING_CHARS) => {
+  const cleanValue = cleanLogString(value)
+  if (cleanValue.length <= maxChars) {
+    return cleanValue
+  }
+  return `${cleanValue.slice(0, maxChars)}...[truncated ${cleanValue.length - maxChars} chars]`
+}
+
+const normalizeLogKey = (key) =>
+  String(key || '')
+    .replace(/[-_]/g, '')
+    .toLowerCase()
+
+const isSensitiveKey = (key) => SENSITIVE_KEY_PATTERN.test(String(key || ''))
+
+const isPromptLikeKey = (key) => PROMPT_FIELD_NAMES.has(normalizeLogKey(key))
+
+const isPayloadLikeKey = (key) => PAYLOAD_FIELD_NAMES.has(normalizeLogKey(key))
+
+const safeObjectKeys = (value) => {
+  try {
+    return Object.keys(value || {})
+  } catch (error) {
+    return []
+  }
+}
+
+const compactObject = (value) => {
+  const output = {}
+  for (const [key, childValue] of Object.entries(value)) {
+    if (childValue !== undefined) {
+      output[key] = childValue
     }
+  }
+  return output
+}
 
-    // 处理字符串值，清理可能导致JSON解析错误的特殊字符
-    if (typeof value === 'string') {
-      try {
-        // 移除或转义可能导致JSON解析错误的字符
-        const cleanValue = value
-          // eslint-disable-next-line no-control-regex
-          .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '') // 移除控制字符
-          .replace(/[\uD800-\uDFFF]/g, '') // 移除孤立的代理对字符
-          // eslint-disable-next-line no-control-regex
-          .replace(/\u0000/g, '') // 移除NUL字节
+const summarizeLogPayload = (value, options = {}) => {
+  const { includePreview = false } = options
 
-        return cleanValue
-      } catch (error) {
-        return '[Invalid String Data]'
+  if (value === undefined) {
+    return undefined
+  }
+  if (value === null) {
+    return null
+  }
+  if (Buffer.isBuffer(value)) {
+    return { type: 'buffer', bytes: value.length, omitted: true }
+  }
+  if (typeof value === 'string') {
+    const summary = { type: 'string', chars: cleanLogString(value).length, omitted: true }
+    if (includePreview) {
+      summary.preview = truncateCleanString(value, MAX_PAYLOAD_PREVIEW_CHARS)
+    }
+    return summary
+  }
+  if (Array.isArray(value)) {
+    const firstObject = value.find((item) => item && typeof item === 'object')
+    const summary = { type: 'array', length: value.length, omitted: true }
+    if (firstObject) {
+      summary.firstItemKeys = safeObjectKeys(firstObject).slice(0, MAX_LOG_OBJECT_KEYS)
+    }
+    return summary
+  }
+  if (value && typeof value === 'object') {
+    const keys = safeObjectKeys(value)
+    const summary = {
+      type: value.constructor?.name === 'Object' ? 'object' : value.constructor?.name || 'object',
+      keys: keys.slice(0, MAX_LOG_OBJECT_KEYS),
+      omitted: true
+    }
+    for (const key of ['id', 'model', 'status', 'code', 'type']) {
+      if (typeof value[key] === 'string' || typeof value[key] === 'number') {
+        summary[key] = truncateCleanString(value[key], 256)
       }
     }
-
-    if (value !== null && typeof value === 'object') {
-      if (seen.has(value)) {
-        return '[Circular Reference]'
-      }
-      seen.add(value)
-
-      // 过滤掉常见的循环引用对象
-      if (value.constructor) {
-        const constructorName = value.constructor.name
-        if (
-          ['Socket', 'TLSSocket', 'HTTPParser', 'IncomingMessage', 'ServerResponse'].includes(
-            constructorName
-          )
-        ) {
-          return `[${constructorName} Object]`
-        }
-      }
-
-      // 递归处理对象属性
-      if (Array.isArray(value)) {
-        return value.map((item, index) => replacer(index, item, depth + 1))
-      } else {
-        const result = {}
-        for (const [k, v] of Object.entries(value)) {
-          // 确保键名也是安全的
-          // eslint-disable-next-line no-control-regex
-          const safeKey = typeof k === 'string' ? k.replace(/[\u0000-\u001F\u007F]/g, '') : k
-          result[safeKey] = replacer(safeKey, v, depth + 1)
-        }
-        return result
-      }
+    if (typeof value.message === 'string') {
+      summary.message = truncateCleanString(value.message, 512)
     }
+    if (typeof value.error === 'string') {
+      summary.error = truncateCleanString(value.error, 512)
+    } else if (value.error && typeof value.error === 'object') {
+      summary.error = summarizeLogPayload(value.error)
+    }
+    if (keys.length > MAX_LOG_OBJECT_KEYS) {
+      summary.truncatedKeys = keys.length - MAX_LOG_OBJECT_KEYS
+    }
+    return summary
+  }
+  return value
+}
 
+const shouldSummarizePayload = (key, value) => {
+  if (!isPayloadLikeKey(key)) {
+    return false
+  }
+  if (typeof value === 'string') {
+    return value.length > MAX_LOG_STRING_CHARS
+  }
+  if (Array.isArray(value)) {
+    return value.length > MAX_LOG_ARRAY_ITEMS
+  }
+  if (value && typeof value === 'object') {
+    const keys = safeObjectKeys(value)
+    return keys.length > MAX_LOG_OBJECT_KEYS || keys.some((childKey) => isPromptLikeKey(childKey))
+  }
+  return false
+}
+
+const isAxiosError = (value) =>
+  value && typeof value === 'object' && (value.isAxiosError === true || value.name === 'AxiosError')
+
+const sanitizeErrorValue = (value) =>
+  compactObject({
+    name: value.name || 'Error',
+    message: truncateCleanString(value.message || String(value), MAX_LOG_STRING_CHARS),
+    code: value.code,
+    status: value.status,
+    statusCode: value.statusCode,
+    stack: value.stack ? truncateCleanString(value.stack, MAX_LOG_STACK_CHARS) : undefined
+  })
+
+const sanitizeAxiosHeaders = (headers) => {
+  if (!headers || typeof headers !== 'object') {
+    return undefined
+  }
+
+  const sanitized = {}
+  for (const [key, value] of Object.entries(headers).slice(0, MAX_LOG_OBJECT_KEYS)) {
+    sanitized[cleanLogString(key)] = isSensitiveKey(key)
+      ? '[Redacted]'
+      : sanitizeLogValue(key, value, 0, new WeakSet())
+  }
+  const keyCount = safeObjectKeys(headers).length
+  if (keyCount > MAX_LOG_OBJECT_KEYS) {
+    sanitized._truncatedKeys = keyCount - MAX_LOG_OBJECT_KEYS
+  }
+  return sanitized
+}
+
+const sanitizeAxiosErrorValue = (value) => {
+  const configValue = value.config || {}
+  const response = value.response || null
+  const method = response?.config?.method || configValue.method
+  const url = response?.config?.url || configValue.url || value.url
+  const responseData = response?.data === undefined ? undefined : summarizeLogPayload(response.data)
+  const configData =
+    configValue.data === undefined ? undefined : summarizeLogPayload(configValue.data)
+
+  return compactObject({
+    name: value.name || 'AxiosError',
+    message: truncateCleanString(value.message || 'Axios request failed', MAX_LOG_STRING_CHARS),
+    code: value.code,
+    status: value.status || response?.status,
+    method,
+    url,
+    stack: value.stack ? truncateCleanString(value.stack, MAX_LOG_STACK_CHARS) : undefined,
+    config: compactObject({
+      method: configValue.method,
+      url: configValue.url,
+      baseURL: configValue.baseURL,
+      timeout: configValue.timeout,
+      headers: sanitizeAxiosHeaders(configValue.headers),
+      data: configData
+    }),
+    response: response
+      ? compactObject({
+          status: response.status,
+          statusText: response.statusText,
+          headers: sanitizeAxiosHeaders(response.headers),
+          data: responseData
+        })
+      : undefined
+  })
+}
+
+function sanitizeLogValue(key, value, depth = 0, seen = new WeakSet()) {
+  if (isSensitiveKey(key)) {
+    return '[Redacted]'
+  }
+
+  if (value === null || value === undefined) {
     return value
   }
 
+  if (typeof value === 'string') {
+    return isPromptLikeKey(key) ? summarizeLogPayload(value) : truncateCleanString(value)
+  }
+
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return value
+  }
+
+  if (typeof value === 'bigint') {
+    return value.toString()
+  }
+
+  if (typeof value === 'function') {
+    return `[Function ${value.name || 'anonymous'}]`
+  }
+
+  if (Buffer.isBuffer(value)) {
+    return { type: 'buffer', bytes: value.length, omitted: true }
+  }
+
+  if (value instanceof Date) {
+    return value.toISOString()
+  }
+
+  if (isAxiosError(value)) {
+    return sanitizeAxiosErrorValue(value)
+  }
+
+  if (value instanceof Error) {
+    return sanitizeErrorValue(value)
+  }
+
+  if (isPromptLikeKey(key) || shouldSummarizePayload(key, value)) {
+    return summarizeLogPayload(value)
+  }
+
+  if (depth >= MAX_LOG_DEPTH) {
+    return summarizeLogPayload(value)
+  }
+
+  if (value && typeof value === 'object') {
+    if (seen.has(value)) {
+      return '[Circular Reference]'
+    }
+    seen.add(value)
+
+    const constructorName = value.constructor?.name
+    if (TRANSPORT_OBJECTS.has(constructorName)) {
+      return `[${constructorName} Object]`
+    }
+
+    if (Array.isArray(value)) {
+      const output = value
+        .slice(0, MAX_LOG_ARRAY_ITEMS)
+        .map((item, index) => sanitizeLogValue(index, item, depth + 1, seen))
+      if (value.length > MAX_LOG_ARRAY_ITEMS) {
+        output.push(`[${value.length - MAX_LOG_ARRAY_ITEMS} more items truncated]`)
+      }
+      return output
+    }
+
+    const output = {}
+    const entries = Object.entries(value)
+    for (const [childKey, childValue] of entries.slice(0, MAX_LOG_OBJECT_KEYS)) {
+      const safeKey = cleanLogString(childKey)
+      output[safeKey] = sanitizeLogValue(safeKey, childValue, depth + 1, seen)
+    }
+    if (entries.length > MAX_LOG_OBJECT_KEYS) {
+      output._truncatedKeys = entries.length - MAX_LOG_OBJECT_KEYS
+    }
+    return output
+  }
+
+  return value
+}
+
+const sanitizeLogArgs = (args) => args.map((arg) => sanitizeLogValue('', arg, 0, new WeakSet()))
+
+// 安全的 JSON 序列化函数，处理循环引用和特殊字符
+const safeStringify = (obj, maxDepth = MAX_LOG_DEPTH) => {
   try {
-    const processed = replacer('', obj)
+    const processed = sanitizeLogValue('', obj, Math.max(0, MAX_LOG_DEPTH - maxDepth))
     const result = JSON.stringify(processed)
-    // 体积保护: 超过 50KB 时对大字段做截断，保留顶层结构
-    if (result.length > 50000 && processed && typeof processed === 'object') {
-      const truncated = { ...processed, _truncated: true, _totalChars: result.length }
-      // 第一轮: 截断单个大字段
-      for (const [k, v] of Object.entries(truncated)) {
-        if (k.startsWith('_')) {
-          continue
-        }
-        const fieldStr = typeof v === 'string' ? v : JSON.stringify(v)
-        if (fieldStr && fieldStr.length > 10000) {
-          truncated[k] = `${fieldStr.substring(0, 10000)}...[truncated]`
-        }
-      }
-      // 第二轮: 如果总长度仍超 50KB，逐字段缩减到 2KB
-      let secondResult = JSON.stringify(truncated)
-      if (secondResult.length > 50000) {
-        for (const [k, v] of Object.entries(truncated)) {
-          if (k.startsWith('_')) {
-            continue
-          }
-          const fieldStr = typeof v === 'string' ? v : JSON.stringify(v)
-          if (fieldStr && fieldStr.length > 2000) {
-            truncated[k] = `${fieldStr.substring(0, 2000)}...[truncated]`
-          }
-        }
-        secondResult = JSON.stringify(truncated)
-      }
-      return secondResult
+    if (typeof result === 'string' && result.length > MAX_STRING_OUTPUT_CHARS) {
+      return JSON.stringify({
+        _truncated: true,
+        _totalChars: result.length,
+        value: `${result.slice(0, MAX_STRING_OUTPUT_CHARS)}...[truncated]`
+      })
     }
     return result
   } catch (error) {
-    // 如果JSON.stringify仍然失败，使用更保守的方法
     try {
       return JSON.stringify({
         error: 'Failed to serialize object',
         message: error.message,
         type: typeof obj,
-        keys: obj && typeof obj === 'object' ? Object.keys(obj) : undefined
+        keys: obj && typeof obj === 'object' ? safeObjectKeys(obj) : undefined
       })
     } catch (finalError) {
       return '{"error":"Critical serialization failure","message":"Unable to serialize any data"}'
@@ -376,15 +613,24 @@ logger.stats = {
 const originalError = logger.error
 const originalWarn = logger.warn
 const originalInfo = logger.info
+const originalDebug = logger.debug
 
 logger.error = function (message, ...args) {
   logger.stats.errors++
-  return originalError.call(this, message, ...args)
+  return originalError.call(
+    this,
+    sanitizeLogValue('message', message, 0, new WeakSet()),
+    ...sanitizeLogArgs(args)
+  )
 }
 
 logger.warn = function (message, ...args) {
   logger.stats.warnings++
-  return originalWarn.call(this, message, ...args)
+  return originalWarn.call(
+    this,
+    sanitizeLogValue('message', message, 0, new WeakSet()),
+    ...sanitizeLogArgs(args)
+  )
 }
 
 logger.info = function (message, ...args) {
@@ -392,7 +638,19 @@ logger.info = function (message, ...args) {
   if (args.length > 0 && typeof args[0] === 'object' && args[0].type === 'request') {
     logger.stats.requests++
   }
-  return originalInfo.call(this, message, ...args)
+  return originalInfo.call(
+    this,
+    sanitizeLogValue('message', message, 0, new WeakSet()),
+    ...sanitizeLogArgs(args)
+  )
+}
+
+logger.debug = function (message, ...args) {
+  return originalDebug.call(
+    this,
+    sanitizeLogValue('message', message, 0, new WeakSet()),
+    ...sanitizeLogArgs(args)
+  )
 }
 
 // 📈 获取日志统计
@@ -446,5 +704,14 @@ logger.start('Logger initialized', {
   maxFiles: config.logging.maxFiles,
   envOverride: process.env.LOG_LEVEL ? true : false
 })
+
+if (isTestEnv) {
+  logger._test = {
+    safeStringify,
+    sanitizeLogValue,
+    sanitizeLogArgs,
+    summarizeLogPayload
+  }
+}
 
 module.exports = logger
