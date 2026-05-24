@@ -5,6 +5,7 @@ const fs = require('fs/promises')
 const path = require('path')
 const crypto = require('crypto')
 const zlib = require('zlib')
+const { StringDecoder } = require('string_decoder')
 
 const PATCH_SENTINEL = Symbol.for('claude_relay.anthropic_capture_hook.installed')
 const ACTIVE_SENTINEL = Symbol.for('claude_relay.anthropic_capture_hook.active')
@@ -22,6 +23,7 @@ const STREAM_FINAL_FILE = 'anthropic-upstream-stream-final.jsonl'
 const DEFAULT_CAPTURE_DIR = '/data/relay-capture'
 const DEFAULT_MAX_RECORD_BYTES = 16 * 1024 * 1024
 const DEFAULT_MAX_FILE_BYTES = 256 * 1024 * 1024
+const DEFAULT_AUDIT_MAX_FILE_BYTES = 16 * 1024 * 1024
 const DEFAULT_BACKUP_FILES = 3
 
 const config = {
@@ -42,6 +44,24 @@ const config = {
   ),
   backupFiles: parsePositiveInt(process.env.ANTHROPIC_CAPTURE_BACKUP_FILES, DEFAULT_BACKUP_FILES),
   includeThinking: isEnabled(process.env.ANTHROPIC_CAPTURE_INCLUDE_THINKING, false),
+  includeRaw: isEnabled(process.env.ANTHROPIC_CAPTURE_INCLUDE_RAW, false),
+  auditEnabled:
+    isEnabled(process.env.CAPTURE_AUDIT_ENABLED, false) ||
+    isEnabled(process.env.ANTHROPIC_CAPTURE_AUDIT_ENABLED, false),
+  auditFile: resolveOutputPath(
+    process.env.CAPTURE_AUDIT_FILE ||
+      process.env.ANTHROPIC_CAPTURE_AUDIT_FILE ||
+      'capture-audit.jsonl',
+    process.env.ANTHROPIC_CAPTURE_DIR || DEFAULT_CAPTURE_DIR
+  ),
+  auditMaxFileBytes: parsePositiveInt(
+    process.env.CAPTURE_AUDIT_MAX_FILE_BYTES || process.env.ANTHROPIC_CAPTURE_AUDIT_MAX_FILE_BYTES,
+    DEFAULT_AUDIT_MAX_FILE_BYTES
+  ),
+  auditBackupFiles: parsePositiveInt(
+    process.env.CAPTURE_AUDIT_BACKUP_FILES || process.env.ANTHROPIC_CAPTURE_AUDIT_BACKUP_FILES,
+    DEFAULT_BACKUP_FILES
+  ),
   debug: isEnabled(process.env.ANTHROPIC_CAPTURE_DEBUG, false)
 }
 
@@ -61,7 +81,10 @@ logDebug('Anthropic capture hook installed', {
   captureMethods: config.captureMethods ? Array.from(config.captureMethods) : ['*'],
   capturePathPrefixes: config.capturePathPrefixes || ['*'],
   maxRecordBytes: config.maxRecordBytes,
-  maxFileBytes: config.maxFileBytes
+  maxFileBytes: config.maxFileBytes,
+  includeRaw: config.includeRaw,
+  auditEnabled: config.auditEnabled,
+  auditFile: config.auditFile
 })
 
 function isEnabled(rawValue, defaultValue = false) {
@@ -113,6 +136,14 @@ function parseCapturePathPrefixes(rawValue) {
   }
   const normalized = prefixes.map((item) => (item.startsWith('/') ? item : `/${item}`))
   return normalized.length > 0 ? normalized : ['/v1/messages']
+}
+
+function resolveOutputPath(rawPath, captureDir) {
+  const outputPath = String(rawPath || '').trim()
+  if (!outputPath) {
+    return path.join(captureDir, 'capture-audit.jsonl')
+  }
+  return path.isAbsolute(outputPath) ? outputPath : path.join(captureDir, outputPath)
 }
 
 function maskSecret(value) {
@@ -174,12 +205,57 @@ function safeJsonStringify(payload, maxBytes, eventType) {
   }
 
   const size = Buffer.byteLength(json, 'utf8')
-  if (size > maxBytes) {
-    logDebug(
-      `⚠️ Large record: ${eventType} is ${(size / 1024 / 1024).toFixed(2)}MB (limit was ${(maxBytes / 1024 / 1024).toFixed(0)}MB), keeping full record`
-    )
+  if (size <= maxBytes) {
+    return json
   }
+
+  const compacted = dropOptionalRawFields(payload)
+  if (compacted.changed) {
+    try {
+      const compactJson = JSON.stringify(compacted.payload)
+      const compactSize = Buffer.byteLength(compactJson, 'utf8')
+      if (compactSize <= maxBytes) {
+        logDebug(`Large record ${eventType}: omitted optional raw fields to stay under limit`)
+        return compactJson
+      }
+
+      logDebug(
+        `⚠️ Large semantic record: ${eventType} is ${(compactSize / 1024 / 1024).toFixed(2)}MB after raw omission (limit ${(maxBytes / 1024 / 1024).toFixed(0)}MB), keeping semantic fields`
+      )
+      return compactJson
+    } catch (_) {
+      // fall through to original JSON; the original stringify already succeeded.
+    }
+  }
+
+  logDebug(
+    `⚠️ Large semantic record: ${eventType} is ${(size / 1024 / 1024).toFixed(2)}MB (limit ${(maxBytes / 1024 / 1024).toFixed(0)}MB), keeping semantic fields`
+  )
   return json
+}
+
+function dropOptionalRawFields(payload) {
+  let changed = false
+  const output = { ...payload }
+
+  if (Object.prototype.hasOwnProperty.call(output, 'request_body_raw')) {
+    output.request_body_raw_omitted = true
+    output.request_body_raw_omit_reason = 'record_size_limit'
+    delete output.request_body_raw
+    changed = true
+  }
+
+  if (output.response && Object.prototype.hasOwnProperty.call(output.response, 'body_raw')) {
+    output.response = {
+      ...output.response,
+      body_raw_omitted: true,
+      body_raw_omit_reason: 'record_size_limit'
+    }
+    delete output.response.body_raw
+    changed = true
+  }
+
+  return { payload: output, changed }
 }
 
 function normalizeRequestMeta(firstArg, secondArg) {
@@ -456,43 +532,314 @@ function applySsePayload(state, payload, eventName, includeThinking) {
   }
 }
 
-function applySseText(state, text, includeThinking) {
-  if (!text || typeof text !== 'string') {
-    return
-  }
-
+function createAnthropicSseTextParser(state, includeThinking) {
   let currentEventName = ''
-  const lines = text.split('\n')
+  let remainder = ''
 
-  for (const rawLine of lines) {
+  const processLine = (rawLine) => {
     const line = rawLine.replace(/\r$/, '')
     if (!line) {
       currentEventName = ''
-      continue
+      return
     }
 
     if (line.startsWith('event:')) {
       currentEventName = line.slice(6).trim()
-      continue
+      return
     }
 
     if (!line.startsWith('data:')) {
-      continue
+      return
     }
 
     const payloadRaw = line.slice(5).trimStart()
     if (!payloadRaw || payloadRaw === '[DONE]') {
-      continue
+      return
     }
 
     const parsed = parseMaybeJson(payloadRaw)
     if (!parsed) {
       state.parseErrors.push('invalid_json_data_line')
-      continue
+      return
     }
 
     applySsePayload(state, parsed, currentEventName, includeThinking)
   }
+
+  return {
+    feedText(text) {
+      if (!text) {
+        return
+      }
+      const merged = `${remainder}${text}`
+      const lines = merged.split('\n')
+      remainder = lines.pop() || ''
+      for (const line of lines) {
+        processLine(line)
+      }
+    },
+    finish() {
+      if (remainder) {
+        processLine(remainder)
+        remainder = ''
+      }
+    }
+  }
+}
+
+function createStreamingBodyDecoder(headers, onText) {
+  const encoding = getContentEncoding(headers)
+  const stringDecoder = new StringDecoder('utf8')
+  let decodeError = null
+  let closed = false
+  let activeEncoding = encoding || ''
+  let pendingSniffBuffer = null
+
+  const emitBuffer = (buffer) => {
+    const text = stringDecoder.write(buffer)
+    if (text) {
+      onText(text)
+    }
+  }
+
+  const finishText = () => {
+    const text = stringDecoder.end()
+    if (text) {
+      onText(text)
+    }
+  }
+
+  const baseMeta = {
+    contentEncoding: encoding || 'identity',
+    decompressed: false,
+    decodeSource: 'identity'
+  }
+
+  let decoder = null
+  let done = Promise.resolve()
+
+  const installDecoder = (kind, source) => {
+    if (kind === 'gzip' || kind === 'x-gzip') {
+      decoder = zlib.createGunzip()
+      baseMeta.contentEncoding = 'gzip'
+    } else if (kind === 'br') {
+      decoder = zlib.createBrotliDecompress()
+      baseMeta.contentEncoding = 'br'
+    } else if (kind === 'deflate') {
+      decoder = zlib.createInflate()
+      baseMeta.contentEncoding = 'deflate'
+    }
+
+    if (!decoder) {
+      return
+    }
+
+    activeEncoding = baseMeta.contentEncoding
+    baseMeta.decompressed = true
+    baseMeta.decodeSource = source
+    done = new Promise((resolve) => {
+      decoder.on('data', emitBuffer)
+      decoder.on('error', (error) => {
+        decodeError = `${activeEncoding || 'unknown'}_decode_failed: ${error.message || String(error)}`
+        closed = true
+        resolve()
+      })
+      decoder.on('end', () => {
+        closed = true
+        finishText()
+        resolve()
+      })
+    })
+  }
+
+  if (encoding === 'gzip' || encoding === 'x-gzip') {
+    installDecoder('gzip', 'content-encoding')
+  } else if (encoding === 'br') {
+    installDecoder('br', 'content-encoding')
+  } else if (encoding === 'deflate') {
+    installDecoder('deflate', 'content-encoding')
+  }
+
+  const writeToDecoder = (buffer) => {
+    try {
+      decoder.write(buffer)
+    } catch (error) {
+      decodeError = `${activeEncoding || 'unknown'}_decode_failed: ${error.message || String(error)}`
+    }
+  }
+
+  const feedIdentityOrSniff = (buffer) => {
+    if (encoding) {
+      emitBuffer(buffer)
+      return
+    }
+
+    const candidate = pendingSniffBuffer ? Buffer.concat([pendingSniffBuffer, buffer]) : buffer
+    if (candidate.length < 2) {
+      pendingSniffBuffer = candidate
+      return
+    }
+
+    pendingSniffBuffer = null
+    if (isGzipMagic(candidate)) {
+      installDecoder('gzip', 'magic')
+      writeToDecoder(candidate)
+      return
+    }
+
+    emitBuffer(candidate)
+  }
+
+  return {
+    feed(chunk) {
+      if (closed || decodeError) {
+        return
+      }
+      const buffer = toBuffer(chunk)
+      if (!buffer || buffer.length === 0) {
+        return
+      }
+
+      if (!decoder) {
+        feedIdentityOrSniff(buffer)
+        return
+      }
+
+      writeToDecoder(buffer)
+    },
+    async finish() {
+      if (!decoder && pendingSniffBuffer) {
+        emitBuffer(pendingSniffBuffer)
+        pendingSniffBuffer = null
+      }
+
+      if (decoder && !closed) {
+        try {
+          decoder.end()
+          await done
+        } catch (error) {
+          decodeError = `${activeEncoding || 'unknown'}_decode_failed: ${error.message || String(error)}`
+        }
+      } else if (!decoder) {
+        finishText()
+      }
+
+      return {
+        ...baseMeta,
+        decodeError
+      }
+    }
+  }
+}
+
+function toBuffer(chunk, encoding) {
+  if (Buffer.isBuffer(chunk)) {
+    return chunk
+  }
+  if (chunk instanceof ArrayBuffer) {
+    return Buffer.from(chunk)
+  }
+  if (ArrayBuffer.isView(chunk)) {
+    return Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)
+  }
+  if (typeof chunk === 'string') {
+    return Buffer.from(chunk, encoding || 'utf8')
+  }
+  return null
+}
+
+function rawBodyMeta(rawText) {
+  const value = typeof rawText === 'string' ? rawText : ''
+  return {
+    bytes: Buffer.byteLength(value, 'utf8'),
+    sha256: value ? crypto.createHash('sha256').update(value).digest('hex') : null
+  }
+}
+
+function jsonByteLength(value) {
+  if (value === undefined || value === null) {
+    return 0
+  }
+  try {
+    return Buffer.byteLength(JSON.stringify(value), 'utf8')
+  } catch (_) {
+    return 0
+  }
+}
+
+function summarizeAnthropicResponseJson(responseJson) {
+  const summary = {
+    assistantTextLen: 0,
+    thinkingTextLen: 0,
+    toolCallCount: 0,
+    usagePresent: Boolean(responseJson && responseJson.usage),
+    responseJsonPresent: Boolean(responseJson)
+  }
+
+  const content = Array.isArray(responseJson && responseJson.content) ? responseJson.content : []
+  for (const block of content) {
+    if (!block || typeof block !== 'object') {
+      continue
+    }
+    if (block.type === 'text' && typeof block.text === 'string') {
+      summary.assistantTextLen += block.text.length
+      continue
+    }
+    if (
+      (block.type === 'thinking' || block.type === 'redacted_thinking') &&
+      typeof block.thinking === 'string'
+    ) {
+      summary.thinkingTextLen += block.thinking.length
+      continue
+    }
+    if (
+      (block.type === 'thinking' || block.type === 'redacted_thinking') &&
+      typeof block.text === 'string'
+    ) {
+      summary.thinkingTextLen += block.text.length
+      continue
+    }
+    if (block.type === 'tool_use') {
+      summary.toolCallCount += 1
+    }
+  }
+
+  return summary
+}
+
+function buildAuditWarnings({ httpStatus, decodeError, responseSemanticPresent, eventType }) {
+  const warnings = []
+  if (decodeError) {
+    warnings.push('decode_error')
+  }
+  if (
+    httpStatus >= 200 &&
+    httpStatus < 300 &&
+    responseSemanticPresent === false &&
+    eventType !== 'transport_error'
+  ) {
+    warnings.push('empty_success_response_semantics')
+  }
+  return warnings
+}
+
+function writeAudit(event, payload) {
+  if (!config.auditEnabled) {
+    return
+  }
+
+  const line = `${JSON.stringify({
+    ts: new Date().toISOString(),
+    source: 'hook',
+    provider: 'anthropic',
+    event,
+    ...payload
+  })}\n`
+
+  queueFileWrite(config.auditFile, line, {
+    maxFileBytes: config.auditMaxFileBytes,
+    backupFiles: config.auditBackupFiles
+  })
 }
 
 function buildStreamRecord(
@@ -508,7 +855,6 @@ function buildStreamRecord(
     flushToolBlock(block, streamState)
   }
 
-  const requestJson = requestRecord.requestBodyJson || null
   return {
     ts: new Date().toISOString(),
     type: 'anthropic_upstream_stream_final',
@@ -525,9 +871,7 @@ function buildStreamRecord(
     },
     request: {
       relay_request_id: requestRecord.relayRequestId,
-      model:
-        requestRecord.requestModel ||
-        (requestJson && typeof requestJson.model === 'string' ? requestJson.model : null),
+      model: requestRecord.requestModel,
       stream: true
     },
     relay_key_id: requestRecord.relayKeyId,
@@ -669,7 +1013,27 @@ function buildNonStreamRecord(
   decodeMeta
 ) {
   const responseJson = parseMaybeJson(responseBodyRaw)
-  const requestJson = requestRecord.requestBodyJson || null
+  const rawMeta = rawBodyMeta(responseBodyRaw)
+  const response = {
+    body_json: responseJson,
+    body_raw_bytes: rawMeta.bytes,
+    body_raw_sha256: rawMeta.sha256,
+    body_raw_omitted: !config.includeRaw,
+    content_encoding:
+      decodeMeta && decodeMeta.contentEncoding ? decodeMeta.contentEncoding : 'identity',
+    decompressed: Boolean(decodeMeta && decodeMeta.decompressed),
+    decode_source: decodeMeta && decodeMeta.decodeSource ? decodeMeta.decodeSource : 'identity',
+    decode_error: decodeMeta && decodeMeta.decodeError ? decodeMeta.decodeError : null,
+    usage: responseJson && responseJson.usage ? responseJson.usage : null,
+    stop_reason: responseJson && responseJson.stop_reason ? responseJson.stop_reason : null,
+    message_id: responseJson && responseJson.id ? responseJson.id : null,
+    model: responseJson && responseJson.model ? responseJson.model : null
+  }
+
+  if (config.includeRaw) {
+    response.body_raw = responseBodyRaw
+    response.body_raw_omitted = false
+  }
 
   return {
     ts: new Date().toISOString(),
@@ -687,25 +1051,11 @@ function buildNonStreamRecord(
     },
     request: {
       relay_request_id: requestRecord.relayRequestId,
-      model:
-        requestRecord.requestModel ||
-        (requestJson && typeof requestJson.model === 'string' ? requestJson.model : null),
+      model: requestRecord.requestModel,
       stream: Boolean(requestRecord.requestStream)
     },
     relay_key_id: requestRecord.relayKeyId,
-    response: {
-      body_raw: responseBodyRaw,
-      body_json: responseJson,
-      content_encoding:
-        decodeMeta && decodeMeta.contentEncoding ? decodeMeta.contentEncoding : 'identity',
-      decompressed: Boolean(decodeMeta && decodeMeta.decompressed),
-      decode_source: decodeMeta && decodeMeta.decodeSource ? decodeMeta.decodeSource : 'identity',
-      decode_error: decodeMeta && decodeMeta.decodeError ? decodeMeta.decodeError : null,
-      usage: responseJson && responseJson.usage ? responseJson.usage : null,
-      stop_reason: responseJson && responseJson.stop_reason ? responseJson.stop_reason : null,
-      message_id: responseJson && responseJson.id ? responseJson.id : null,
-      model: responseJson && responseJson.model ? responseJson.model : null
-    },
+    response,
     timing: {
       started_at: timing.startedAt,
       ended_at: timing.endedAt,
@@ -738,8 +1088,6 @@ function patchHttpsRequest() {
 
     const requestChunks = []
     const requestRecord = {
-      requestBodyRaw: '',
-      requestBodyJson: null,
       requestModel: null,
       requestStream: false,
       relayRequestId: null,
@@ -780,18 +1128,27 @@ function patchHttpsRequest() {
       const isStreamResponse = contentType.includes('text/event-stream')
 
       const streamState = createStreamState(config.includeThinking)
-      const responseChunks = []
+      const sseTextParser = isStreamResponse
+        ? createAnthropicSseTextParser(streamState, config.includeThinking)
+        : null
+      const streamDecoder = isStreamResponse
+        ? createStreamingBodyDecoder(responseHeaders, (text) => sseTextParser.feedText(text))
+        : null
+      const responseChunks = isStreamResponse ? null : []
 
       res.on('data', (chunk) => {
         if (isStreamResponse) {
-          responseChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8'))
+          streamDecoder.feed(chunk)
           return
         }
 
-        responseChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8'))
+        const buffer = toBuffer(chunk)
+        if (buffer) {
+          responseChunks.push(buffer)
+        }
       })
 
-      const finalize = (error) => {
+      const finalize = async (error) => {
         if (responseFinished) {
           return
         }
@@ -806,13 +1163,11 @@ function patchHttpsRequest() {
         }
 
         if (isStreamResponse) {
-          const streamBodyBuffer = Buffer.concat(responseChunks)
-          const decodeMeta = decodeCompressedBody(streamBodyBuffer, responseHeaders)
+          const decodeMeta = await streamDecoder.finish()
           if (decodeMeta.decodeError) {
             streamState.parseErrors.push(decodeMeta.decodeError)
           }
-          const streamText = decodeMeta.buffer.toString('utf8')
-          applySseText(streamState, streamText, config.includeThinking)
+          sseTextParser.finish()
 
           const streamRecord = buildStreamRecord(
             traceId,
@@ -841,6 +1196,41 @@ function patchHttpsRequest() {
             latency_ms: latencyMs,
             error: streamRecord.error
           })
+          const responseSemanticPresent = Boolean(
+            streamRecord.stream.assistant_text_full ||
+              streamRecord.stream.thought_text_full ||
+              (Array.isArray(streamRecord.stream.tool_calls) &&
+                streamRecord.stream.tool_calls.length > 0) ||
+              (streamRecord.stream.usage && Object.keys(streamRecord.stream.usage).length > 0)
+          )
+          writeAudit('response_written', {
+            trace_id: traceId,
+            relay_key_id: requestRecord.relayKeyId,
+            upstream_host: requestMeta.hostname,
+            upstream_path: requestMeta.path,
+            response_kind: 'stream',
+            http_status: responseMeta.statusCode,
+            request_model: requestRecord.requestModel,
+            response_model: streamRecord.stream.message_model,
+            request_stream: true,
+            response_semantic_present: responseSemanticPresent,
+            assistant_text_len: String(streamRecord.stream.assistant_text_full || '').length,
+            thinking_text_len: String(streamRecord.stream.thought_text_full || '').length,
+            tool_call_count: Array.isArray(streamRecord.stream.tool_calls)
+              ? streamRecord.stream.tool_calls.length
+              : 0,
+            usage_present: Boolean(
+              streamRecord.stream.usage && Object.keys(streamRecord.stream.usage).length > 0
+            ),
+            decode_source: decodeMeta.decodeSource,
+            decode_error: decodeMeta.decodeError,
+            warnings: buildAuditWarnings({
+              httpStatus: responseMeta.statusCode,
+              decodeError: decodeMeta.decodeError,
+              responseSemanticPresent,
+              eventType: 'stream'
+            })
+          })
           return
         }
 
@@ -858,10 +1248,55 @@ function patchHttpsRequest() {
           decodeMeta
         )
         writeJsonl(RESPONSES_FILE, nonStreamRecord)
+        const responseSummary = summarizeAnthropicResponseJson(nonStreamRecord.response.body_json)
+        const responseSemanticPresent = Boolean(
+          responseSummary.assistantTextLen > 0 ||
+            responseSummary.thinkingTextLen > 0 ||
+            responseSummary.toolCallCount > 0 ||
+            responseSummary.usagePresent ||
+            responseSummary.responseJsonPresent
+        )
+        writeAudit('response_written', {
+          trace_id: traceId,
+          relay_key_id: requestRecord.relayKeyId,
+          upstream_host: requestMeta.hostname,
+          upstream_path: requestMeta.path,
+          response_kind: 'non_stream',
+          http_status: responseMeta.statusCode,
+          request_model: requestRecord.requestModel,
+          response_model: nonStreamRecord.response.model,
+          request_stream: Boolean(requestRecord.requestStream),
+          response_semantic_present: responseSemanticPresent,
+          assistant_text_len: responseSummary.assistantTextLen,
+          thinking_text_len: responseSummary.thinkingTextLen,
+          tool_call_count: responseSummary.toolCallCount,
+          usage_present: responseSummary.usagePresent,
+          decode_source: decodeMeta.decodeSource,
+          decode_error: decodeMeta.decodeError,
+          warnings: buildAuditWarnings({
+            httpStatus: responseMeta.statusCode,
+            decodeError: decodeMeta.decodeError,
+            responseSemanticPresent,
+            eventType: 'non_stream'
+          })
+        })
       }
 
-      res.on('end', () => finalize(null))
-      res.on('error', (error) => finalize(error))
+      res.on('end', () => {
+        finalize(null).catch((error) => {
+          logError('Failed to finalize stream capture', {
+            error: error && error.message ? error.message : String(error)
+          })
+        })
+      })
+      res.on('error', (error) => {
+        finalize(error).catch((finalizeError) => {
+          logError('Failed to finalize errored stream capture', {
+            error:
+              finalizeError && finalizeError.message ? finalizeError.message : String(finalizeError)
+          })
+        })
+      })
     }
 
     req.on('response', attachResponseCapture)
@@ -907,6 +1342,23 @@ function patchHttpsRequest() {
           code: error && error.code ? error.code : null
         }
       })
+      writeAudit('response_written', {
+        trace_id: traceId,
+        relay_key_id: requestRecord.relayKeyId,
+        upstream_host: requestMeta.hostname,
+        upstream_path: requestMeta.path,
+        response_kind: 'transport_error',
+        http_status: null,
+        request_model: requestRecord.requestModel,
+        request_stream: Boolean(requestRecord.requestStream),
+        response_semantic_present: false,
+        assistant_text_len: 0,
+        thinking_text_len: 0,
+        tool_call_count: 0,
+        usage_present: false,
+        error_code: error && error.code ? error.code : null,
+        warnings: ['transport_error']
+      })
 
       responseFinished = true
     })
@@ -918,9 +1370,8 @@ function patchHttpsRequest() {
 function persistRequestRecord(traceId, requestMeta, requestChunks, requestRecord) {
   const requestBodyRaw = Buffer.concat(requestChunks).toString('utf8')
   const requestBodyJson = parseMaybeJson(requestBodyRaw)
+  const rawMeta = rawBodyMeta(requestBodyRaw)
 
-  requestRecord.requestBodyRaw = requestBodyRaw
-  requestRecord.requestBodyJson = requestBodyJson
   requestRecord.requestModel =
     requestBodyJson && typeof requestBodyJson.model === 'string' ? requestBodyJson.model : null
   requestRecord.requestStream = requestBodyJson && requestBodyJson.stream === true
@@ -929,7 +1380,7 @@ function persistRequestRecord(traceId, requestMeta, requestChunks, requestRecord
     getHeaderCaseInsensitive(requestMeta.headers, 'x-requestid') ||
     null
 
-  writeJsonl(REQUESTS_FILE, {
+  const payload = {
     ts: new Date().toISOString(),
     type: 'anthropic_upstream_request',
     trace_id: traceId,
@@ -944,11 +1395,33 @@ function persistRequestRecord(traceId, requestMeta, requestChunks, requestRecord
     relay_request_id: requestRecord.relayRequestId,
     relay_key_id: requestRecord.relayKeyId,
     headers: sanitizeHeaders(requestMeta.headers),
-    request_body_raw: requestBodyRaw,
+    request_body_raw_bytes: rawMeta.bytes,
+    request_body_raw_sha256: rawMeta.sha256,
+    request_body_raw_omitted: !config.includeRaw,
     request_body_json: requestBodyJson,
     request_model: requestRecord.requestModel,
     request_stream: requestRecord.requestStream
+  }
+
+  if (config.includeRaw) {
+    payload.request_body_raw = requestBodyRaw
+    payload.request_body_raw_omitted = false
+  }
+
+  writeJsonl(REQUESTS_FILE, payload)
+  writeAudit('request_written', {
+    trace_id: traceId,
+    relay_key_id: requestRecord.relayKeyId,
+    upstream_host: requestMeta.hostname,
+    upstream_path: requestMeta.path,
+    model: requestRecord.requestModel,
+    stream: Boolean(requestRecord.requestStream),
+    request_json_present: Boolean(requestBodyJson),
+    request_json_bytes: jsonByteLength(requestBodyJson),
+    request_body_raw_bytes: rawMeta.bytes,
+    request_body_raw_omitted: payload.request_body_raw_omitted
   })
+  requestChunks.length = 0
 }
 
 function getHeaderCaseInsensitive(headers, targetKey) {
@@ -1041,13 +1514,13 @@ function writeJsonl(filename, payload) {
   queueFileWrite(filePath, line)
 }
 
-function queueFileWrite(filePath, line) {
+function queueFileWrite(filePath, line, options = {}) {
   const previous = writeQueues.get(filePath) || Promise.resolve()
 
   const current = previous
     .then(async () => {
       await ensureInitialized()
-      await appendWithRotate(filePath, line)
+      await appendWithRotate(filePath, line, options)
     })
     .catch((error) => {
       logError('Failed to write capture line', {
@@ -1066,12 +1539,17 @@ async function ensureInitialized() {
   return initPromise
 }
 
-async function appendWithRotate(filePath, line) {
-  const maxFileBytes = config.maxFileBytes
+async function appendWithRotate(filePath, line, options = {}) {
+  const maxFileBytes = options.maxFileBytes || config.maxFileBytes
+  const backupFiles =
+    options.backupFiles === undefined || options.backupFiles === null
+      ? config.backupFiles
+      : options.backupFiles
   const nextSize = Buffer.byteLength(line, 'utf8')
 
   let currentSize = 0
   try {
+    await fs.mkdir(path.dirname(filePath), { recursive: true })
     const stat = await fs.stat(filePath)
     currentSize = stat.size
   } catch (_) {
@@ -1079,19 +1557,19 @@ async function appendWithRotate(filePath, line) {
   }
 
   if (currentSize + nextSize > maxFileBytes) {
-    await rotateFile(filePath)
+    await rotateFile(filePath, backupFiles)
   }
 
   await fs.appendFile(filePath, line, { encoding: 'utf8' })
 }
 
-async function rotateFile(filePath) {
-  if (config.backupFiles <= 0) {
+async function rotateFile(filePath, backupFiles = config.backupFiles) {
+  if (backupFiles <= 0) {
     await fs.unlink(filePath).catch(() => {})
     return
   }
 
-  const backupLimit = config.backupFiles
+  const backupLimit = backupFiles
 
   // Shift old backups: .bak.(n-1) -> .bak.n
   for (let i = backupLimit - 1; i >= 1; i -= 1) {
