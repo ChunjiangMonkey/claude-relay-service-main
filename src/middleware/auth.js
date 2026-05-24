@@ -1761,6 +1761,182 @@ const corsMiddleware = (req, res, next) => {
   }
 }
 
+const LOG_BODY_ESTIMATE_LIMIT = 200000
+const LOG_STRING_PREVIEW_LIMIT = 256
+
+const estimateJsonChars = (value, limit = LOG_BODY_ESTIMATE_LIMIT, seen = new WeakSet()) => {
+  const add = (current, amount) => Math.min(limit + 1, current + amount)
+
+  const estimate = (childValue) => {
+    if (childValue === null || childValue === undefined) {
+      return 4
+    }
+    if (typeof childValue === 'string') {
+      return Math.min(limit + 1, childValue.length + 2)
+    }
+    if (typeof childValue === 'number' || typeof childValue === 'boolean') {
+      return String(childValue).length
+    }
+    if (typeof childValue === 'bigint') {
+      return childValue.toString().length + 2
+    }
+    if (Buffer.isBuffer(childValue)) {
+      return Math.min(limit + 1, childValue.length)
+    }
+    if (Array.isArray(childValue)) {
+      if (seen.has(childValue)) {
+        return 20
+      }
+      seen.add(childValue)
+      let total = 2
+      for (const item of childValue) {
+        total = add(total, estimate(item) + 1)
+        if (total > limit) {
+          return total
+        }
+      }
+      return total
+    }
+    if (childValue && typeof childValue === 'object') {
+      if (seen.has(childValue)) {
+        return 20
+      }
+      seen.add(childValue)
+      let total = 2
+      for (const [key, item] of Object.entries(childValue)) {
+        total = add(total, String(key).length + 3 + estimate(item))
+        if (total > limit) {
+          return total
+        }
+      }
+      return total
+    }
+    return 0
+  }
+
+  return estimate(value)
+}
+
+const getCollectionCount = (value) => {
+  if (Array.isArray(value)) {
+    return value.length
+  }
+  if (value && typeof value === 'object') {
+    return Object.keys(value).length
+  }
+  return undefined
+}
+
+const getTextSize = (value) => {
+  if (typeof value === 'string') {
+    return value.length
+  }
+  if (Array.isArray(value) || (value && typeof value === 'object')) {
+    return estimateJsonChars(value)
+  }
+  return undefined
+}
+
+const truncateForLog = (value, maxChars = LOG_STRING_PREVIEW_LIMIT) => {
+  if (value === undefined || value === null) {
+    return value
+  }
+  const text = String(value)
+  if (text.length <= maxChars) {
+    return text
+  }
+  return `${text.slice(0, maxChars)}...[truncated ${text.length - maxChars} chars]`
+}
+
+const summarizeRequestBodyForLog = (body) => {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return undefined
+  }
+
+  const summary = {
+    model: typeof body.model === 'string' ? truncateForLog(body.model, 256) : body.model,
+    stream: typeof body.stream === 'boolean' ? body.stream : undefined,
+    keys: Object.keys(body).slice(0, 50),
+    approxChars: estimateJsonChars(body)
+  }
+
+  const instructionsChars = getTextSize(body.instructions)
+  if (instructionsChars !== undefined) {
+    summary.instructionsChars = instructionsChars
+  }
+
+  const systemChars = getTextSize(body.system)
+  if (systemChars !== undefined) {
+    summary.systemChars = systemChars
+  }
+
+  const inputItems = getCollectionCount(body.input)
+  if (inputItems !== undefined) {
+    summary.inputItems = inputItems
+  } else if (typeof body.input === 'string') {
+    summary.inputChars = body.input.length
+  }
+
+  const messagesCount = getCollectionCount(body.messages)
+  if (messagesCount !== undefined) {
+    summary.messagesCount = messagesCount
+  }
+
+  const toolsCount = getCollectionCount(body.tools)
+  if (toolsCount !== undefined) {
+    summary.toolsCount = toolsCount
+  }
+
+  if (summary.approxChars > LOG_BODY_ESTIMATE_LIMIT) {
+    summary.approxCharsExceeded = LOG_BODY_ESTIMATE_LIMIT
+  }
+
+  return summary
+}
+
+const summarizeResponseBodyForLog = (body) => {
+  if (body === undefined || body === null) {
+    return undefined
+  }
+  if (typeof body !== 'object' || Array.isArray(body)) {
+    return {
+      type: Array.isArray(body) ? 'array' : typeof body,
+      count: Array.isArray(body) ? body.length : undefined,
+      chars: typeof body === 'string' ? body.length : undefined,
+      preview: typeof body === 'string' ? truncateForLog(body) : undefined
+    }
+  }
+
+  const summary = {
+    type: body.constructor?.name === 'Object' ? 'object' : body.constructor?.name || 'object',
+    keys: Object.keys(body).slice(0, 50),
+    approxChars: estimateJsonChars(body)
+  }
+
+  for (const key of ['error', 'message', 'status', 'code', 'type']) {
+    const value = body[key]
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      summary[key] = typeof value === 'string' ? truncateForLog(value) : value
+    }
+  }
+
+  if (body.error && typeof body.error === 'object') {
+    summary.error = {}
+    for (const key of ['type', 'message', 'code', 'status']) {
+      const value = body.error[key]
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+        summary.error[key] = typeof value === 'string' ? truncateForLog(value) : value
+      }
+    }
+  }
+
+  if (summary.approxChars > LOG_BODY_ESTIMATE_LIMIT) {
+    summary.approxCharsExceeded = LOG_BODY_ESTIMATE_LIMIT
+  }
+
+  return summary
+}
+
 // 📝 请求日志中间件（优化版）
 const requestLogger = (req, res, next) => {
   const start = Date.now()
@@ -1781,14 +1957,14 @@ const requestLogger = (req, res, next) => {
   if (req.originalUrl !== '/health') {
     logger.debug(`▶ [${requestId}] ${req.method} ${req.originalUrl}`, {
       ip: clientIP,
-      body: req.body && Object.keys(req.body).length > 0 ? req.body : undefined
+      body: summarizeRequestBodyForLog(req.body)
     })
   }
 
   // 拦截 res.json() 捕获响应体
   const originalJson = res.json.bind(res)
   res.json = (body) => {
-    res._responseBody = body
+    res._responseBodySummary = summarizeResponseBodyForLog(body)
     return originalJson(body)
   }
 
@@ -1812,7 +1988,7 @@ const requestLogger = (req, res, next) => {
 
     // 请求体（非 GET 且有内容时显示）
     if (req.method !== 'GET' && req.body && Object.keys(req.body).length > 0) {
-      meta.req = req.body
+      meta.req = summarizeRequestBodyForLog(req.body)
     }
 
     // 查询参数（GET 请求且有查询参数时单独显示）
@@ -1822,8 +1998,8 @@ const requestLogger = (req, res, next) => {
     }
 
     // 响应体
-    if (res._responseBody) {
-      meta.res = res._responseBody
+    if (res._responseBodySummary) {
+      meta.res = res._responseBodySummary
     }
 
     // API Key 信息（合并到同一条日志）
@@ -2093,7 +2269,7 @@ const requestSizeLimit = (req, res, next) => {
   return next()
 }
 
-module.exports = {
+const authExports = {
   authenticateApiKey,
   authenticateAdmin,
   authenticateUser,
@@ -2107,3 +2283,13 @@ module.exports = {
   globalRateLimit,
   requestSizeLimit
 }
+
+if (process.env.NODE_ENV === 'test' || process.env.JEST_WORKER_ID) {
+  authExports._test = {
+    estimateJsonChars,
+    summarizeRequestBodyForLog,
+    summarizeResponseBodyForLog
+  }
+}
+
+module.exports = authExports
