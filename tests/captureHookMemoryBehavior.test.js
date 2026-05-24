@@ -530,4 +530,95 @@ describe('capture hooks memory-safe semantic output', () => {
       warnings: []
     })
   })
+
+  test('openai stream request captures SSE when content-type is missing', async () => {
+    process.env.OPENAI_CAPTURE_ENABLED = 'true'
+    process.env.OPENAI_CAPTURE_DIR = tempDir
+    process.env.OPENAI_CAPTURE_HOSTS = 'api.openai.com,chatgpt.com'
+    process.env.OPENAI_CAPTURE_PATH_PREFIXES =
+      '/v1/responses,/responses,/backend-api/codex/responses'
+    process.env.OPENAI_CAPTURE_INCLUDE_REASONING = 'true'
+    process.env.OPENAI_CAPTURE_INCLUDE_RAW = 'false'
+
+    installFakeHttpsRequest()
+    loadCommonJsHook('extensions/openai-capture/hook/openai-hook.js')
+
+    const req = https.request({
+      protocol: 'https:',
+      hostname: 'chatgpt.com',
+      host: 'chatgpt.com',
+      path: '/backend-api/codex/responses',
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer chatgpt-token',
+        'x-relay-key-id': 'relay-key-chatgpt-codex'
+      }
+    })
+
+    const requestBody = {
+      model: 'gpt-5.5',
+      stream: true,
+      input: [{ role: 'user', content: 'hello codex' }]
+    }
+    req.write(JSON.stringify(requestBody))
+    req.end()
+
+    const res = new EventEmitter()
+    res.statusCode = 200
+    res.headers = {}
+    req.emit('response', res)
+
+    const completedResponse = {
+      id: 'resp_codex',
+      model: 'gpt-5.5',
+      status: 'completed',
+      output: [
+        {
+          type: 'message',
+          content: [{ type: 'output_text', text: 'hello codex answer' }]
+        },
+        {
+          type: 'reasoning',
+          summary: [{ text: 'codex reasoning' }]
+        }
+      ],
+      usage: {
+        input_tokens: 11,
+        output_tokens: 13,
+        total_tokens: 24,
+        output_tokens_details: { reasoning_tokens: 7 }
+      }
+    }
+
+    const sse = [
+      'event: response.output_text.delta',
+      'data: {"type":"response.output_text.delta","delta":"hello codex answer"}',
+      '',
+      'event: response.reasoning_summary_text.delta',
+      'data: {"type":"response.reasoning_summary_text.delta","delta":"codex reasoning"}',
+      '',
+      'event: response.completed',
+      `data: ${JSON.stringify({ type: 'response.completed', response: completedResponse })}`,
+      ''
+    ].join('\n')
+
+    res.emit('data', Buffer.from(sse))
+    res.emit('end')
+
+    const streamRows = await waitForJsonl(tempDir, 'openai-upstream-stream-final.jsonl')
+    expect(streamRows[0].provider_kind).toBe('chatgpt-codex')
+    expect(streamRows[0].stream.response_id).toBe('resp_codex')
+    expect(streamRows[0].stream.response_model).toBe('gpt-5.5')
+    expect(streamRows[0].stream.status).toBe('completed')
+    expect(streamRows[0].stream.assistant_text_full).toBe('hello codex answer')
+    expect(streamRows[0].stream.reasoning_text_full).toBe('codex reasoning')
+    expect(streamRows[0].stream.usage).toEqual(completedResponse.usage)
+
+    const summaryRows = await waitForJsonl(tempDir, 'openai-upstream-responses.jsonl')
+    expect(summaryRows[0].type).toBe('openai_upstream_response_stream_summary')
+    expect(summaryRows[0].decode_source).toBe('identity')
+    expect(summaryRows[0].decompressed).toBe(false)
+    expect(summaryRows[0].decode_error).toBeNull()
+    expect(summaryRows[0].usage).toEqual(completedResponse.usage)
+  })
 })
