@@ -1,4 +1,5 @@
 const express = require('express')
+const { StringDecoder } = require('string_decoder')
 const redis = require('../models/redis')
 const logger = require('../utils/logger')
 const apiKeyService = require('../services/apiKeyService')
@@ -8,13 +9,137 @@ const openaiAccountService = require('../services/account/openaiAccountService')
 const serviceRatesService = require('../services/serviceRatesService')
 const {
   createClaudeTestPayload,
+  createCodexTestPayload,
   extractErrorMessage,
+  generateCodexTestSessionId,
   sanitizeErrorMsg
 } = require('../utils/testPayloadHelper')
 const modelsConfig = require('../../config/models')
-const { getSafeMessage } = require('../utils/errorSanitizer')
+const { getSafeMessage, mapToErrorCode } = require('../utils/errorSanitizer')
 
 const router = express.Router()
+
+const API_KEY_TEST_MAX_ERROR_BODY_BYTES = 64 * 1024
+const API_KEY_TEST_MAX_SSE_LINE_CHARS = 64 * 1024
+
+function writeTestSse(res, payload) {
+  if (res.destroyed || res.writableEnded) {
+    return
+  }
+  res.write(`data: ${JSON.stringify(payload)}\n\n`)
+}
+
+function finishTestSse(res, success, error = null) {
+  if (res.destroyed || res.writableEnded) {
+    return
+  }
+  writeTestSse(res, {
+    type: 'test_complete',
+    success,
+    ...(error ? { error } : {})
+  })
+  res.end()
+}
+
+function sanitizeApiKeyTestError(error, statusCode = null) {
+  const input =
+    typeof error === 'string'
+      ? { message: error, statusCode }
+      : {
+          ...error,
+          statusCode: statusCode || error?.statusCode || error?.status || error?.response?.status
+        }
+
+  const mapped = mapToErrorCode(input, { logOriginal: false })
+  return `[${mapped.code}] ${mapped.message}`
+}
+
+function extractErrorFromBody(body, fallback) {
+  if (!body) {
+    return fallback
+  }
+  try {
+    return extractErrorMessage(JSON.parse(body), fallback)
+  } catch {
+    return body.length <= 500 ? body : fallback
+  }
+}
+
+async function readLimitedStreamText(stream, maxBytes = API_KEY_TEST_MAX_ERROR_BODY_BYTES) {
+  const decoder = new StringDecoder('utf8')
+  let body = ''
+  let bytes = 0
+  let truncated = false
+  let settled = false
+
+  return await new Promise((resolve) => {
+    const finish = () => {
+      if (settled) {
+        return
+      }
+      settled = true
+      body += decoder.end()
+      resolve({ body, truncated })
+    }
+
+    stream.on('data', (chunk) => {
+      if (settled) {
+        return
+      }
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      bytes += buffer.length
+
+      if (bytes <= maxBytes) {
+        body += decoder.write(buffer)
+        return
+      }
+
+      const allowed = Math.max(0, buffer.length - (bytes - maxBytes))
+      if (allowed > 0) {
+        body += decoder.write(buffer.subarray(0, allowed))
+      }
+      truncated = true
+      stream.destroy()
+      finish()
+    })
+    stream.on('end', finish)
+    stream.on('error', finish)
+    stream.on('close', finish)
+  })
+}
+
+function handleOpenAITestSsePayload(data, state, res) {
+  if (!data || typeof data !== 'object') {
+    return
+  }
+
+  if (data.error) {
+    state.error = extractErrorMessage(data, 'OpenAI/Codex test stream returned an error')
+    return
+  }
+
+  if (data.type === 'response.output_text.delta' && data.delta) {
+    state.sawResponse = true
+    writeTestSse(res, { type: 'content', text: data.delta })
+    return
+  }
+
+  if (data.type === 'response.content_part.delta' && data.delta?.text) {
+    state.sawResponse = true
+    writeTestSse(res, { type: 'content', text: data.delta.text })
+    return
+  }
+
+  if (data.type === 'response.completed' || data.type === 'response.done') {
+    state.sawResponse = true
+    state.completed = true
+    return
+  }
+
+  if (data.type === 'response.failed' || data.response?.status === 'failed') {
+    state.error = extractErrorMessage(data, 'OpenAI/Codex test response failed')
+  }
+}
 
 // 📋 获取可用模型列表（公开接口）
 router.get('/models', (req, res) => {
@@ -1164,11 +1289,9 @@ router.post('/api-key/test-gemini', async (req, res) => {
 // 🧪 OpenAI/Codex API Key 端点测试接口
 router.post('/api-key/test-openai', async (req, res) => {
   const config = require('../../config/config')
-  const { createOpenAITestPayload } = require('../utils/testPayloadHelper')
 
   try {
-    const { apiKey, model = 'gpt-5', prompt = 'hi' } = req.body
-    const maxTokens = sanitizeMaxTokens(req.body.maxTokens)
+    const { apiKey, model = 'gpt-5.5', prompt = 'hi' } = req.body
 
     if (!apiKey) {
       return res.status(400).json({
@@ -1218,87 +1341,166 @@ router.post('/api-key/test-openai', async (req, res) => {
     res.write(`data: ${JSON.stringify({ type: 'test_start', message: 'Test started' })}\n\n`)
 
     const axios = require('axios')
-    const payload = createOpenAITestPayload(model, { prompt, maxTokens })
+    const payload = createCodexTestPayload(model, { prompt, stream: true })
+    const sessionId = generateCodexTestSessionId()
+    const controller = new AbortController()
+    let upstreamStream = null
+    let clientClosed = false
+    let testFinished = false
+
+    const cleanupUpstream = () => {
+      if (testFinished) {
+        return
+      }
+      clientClosed = true
+      controller.abort()
+      if (upstreamStream?.destroy) {
+        upstreamStream.destroy()
+      }
+    }
+
+    const markTestFinished = () => {
+      testFinished = true
+      res.removeListener('close', cleanupUpstream)
+    }
+
+    res.on('close', cleanupUpstream)
 
     try {
       const response = await axios.post(apiUrl, payload, {
         headers: {
           'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
           'x-api-key': apiKey,
-          'User-Agent': 'codex_cli_rs/1.0.0'
+          'User-Agent': 'codex_cli_rs/1.0.0',
+          originator: 'codex_cli_rs',
+          session_id: sessionId
         },
         timeout: 60000,
         responseType: 'stream',
+        signal: controller.signal,
         validateStatus: () => true
       })
+      upstreamStream = response.data
 
       if (response.status !== 200) {
-        const chunks = []
-        response.data.on('data', (chunk) => chunks.push(chunk))
-        response.data.on('end', () => {
-          const errorData = Buffer.concat(chunks).toString()
-          let errorMsg = `API Error: ${response.status}`
-          try {
-            const json = JSON.parse(errorData)
-            errorMsg = extractErrorMessage(json, errorMsg)
-          } catch {
-            if (errorData.length < 200) {
-              errorMsg = errorData || errorMsg
-            }
-          }
-          res.write(
-            `data: ${JSON.stringify({ type: 'test_complete', success: false, error: sanitizeErrorMsg(errorMsg) })}\n\n`
+        const { body, truncated } = await readLimitedStreamText(upstreamStream)
+        const fallback = `OpenAI/Codex API Key test returned HTTP ${response.status}`
+        const errorMsg = extractErrorFromBody(body, fallback)
+        markTestFinished()
+        if (!clientClosed) {
+          finishTestSse(
+            res,
+            false,
+            sanitizeApiKeyTestError(
+              truncated ? `${errorMsg} (truncated)` : errorMsg,
+              response.status
+            )
           )
-          res.end()
-        })
+        }
         return
       }
 
       let buffer = ''
-      response.data.on('data', (chunk) => {
-        buffer += chunk.toString()
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || ''
+      const streamState = {
+        sawResponse: false,
+        completed: false,
+        error: null
+      }
 
-        for (const line of lines) {
-          if (!line.startsWith('data:')) {
-            continue
-          }
-          const jsonStr = line.substring(5).trim()
-          if (!jsonStr || jsonStr === '[DONE]') {
-            continue
-          }
+      await new Promise((resolve) => {
+        let streamSettled = false
 
-          try {
-            const data = JSON.parse(jsonStr)
-            // OpenAI Responses 格式: output[].content[].text 或 delta
-            if (data.type === 'response.output_text.delta' && data.delta) {
-              res.write(`data: ${JSON.stringify({ type: 'content', text: data.delta })}\n\n`)
-            } else if (data.type === 'response.content_part.delta' && data.delta?.text) {
-              res.write(`data: ${JSON.stringify({ type: 'content', text: data.delta.text })}\n\n`)
-            }
-          } catch {
-            // ignore
+        const settleStream = (success, error = null) => {
+          if (streamSettled) {
+            return
           }
+          streamSettled = true
+          markTestFinished()
+          if (!clientClosed) {
+            finishTestSse(res, success, error)
+          }
+          resolve()
         }
-      })
 
-      response.data.on('end', () => {
-        res.write(`data: ${JSON.stringify({ type: 'test_complete', success: true })}\n\n`)
-        res.end()
-      })
+        upstreamStream.on('data', (chunk) => {
+          buffer += chunk.toString()
 
-      response.data.on('error', (err) => {
-        res.write(
-          `data: ${JSON.stringify({ type: 'test_complete', success: false, error: getSafeMessage(err) })}\n\n`
-        )
-        res.end()
+          if (buffer.length > API_KEY_TEST_MAX_SSE_LINE_CHARS && !buffer.includes('\n')) {
+            streamState.error = 'OpenAI/Codex test stream line exceeded size limit'
+            buffer = ''
+            settleStream(false, sanitizeApiKeyTestError(streamState.error))
+            upstreamStream.destroy()
+            return
+          }
+
+          const lines = buffer.split('\n')
+          buffer = lines.pop() || ''
+
+          for (const line of lines) {
+            if (line.length > API_KEY_TEST_MAX_SSE_LINE_CHARS) {
+              streamState.error = 'OpenAI/Codex test stream line exceeded size limit'
+              settleStream(false, sanitizeApiKeyTestError(streamState.error))
+              upstreamStream.destroy()
+              return
+            }
+            if (!line.startsWith('data:')) {
+              continue
+            }
+            const jsonStr = line.substring(5).trim()
+            if (!jsonStr || jsonStr === '[DONE]') {
+              continue
+            }
+
+            try {
+              const data = JSON.parse(jsonStr)
+              handleOpenAITestSsePayload(data, streamState, res)
+            } catch {
+              // ignore
+            }
+          }
+        })
+
+        upstreamStream.on('end', () => {
+          if (buffer.trim() && buffer.startsWith('data:')) {
+            const jsonStr = buffer.substring(5).trim()
+            if (jsonStr && jsonStr !== '[DONE]') {
+              try {
+                handleOpenAITestSsePayload(JSON.parse(jsonStr), streamState, res)
+              } catch {
+                // ignore
+              }
+            }
+          }
+
+          if (streamState.error) {
+            settleStream(false, sanitizeApiKeyTestError(streamState.error))
+            return
+          }
+
+          settleStream(true)
+        })
+
+        upstreamStream.on('error', (err) => {
+          settleStream(false, sanitizeApiKeyTestError(streamState.error || err))
+        })
+
+        upstreamStream.on('close', () => {
+          if (clientClosed) {
+            settleStream(false)
+            return
+          }
+          settleStream(
+            false,
+            sanitizeApiKeyTestError('OpenAI/Codex test stream closed before completion')
+          )
+        })
       })
     } catch (axiosError) {
-      res.write(
-        `data: ${JSON.stringify({ type: 'test_complete', success: false, error: getSafeMessage(axiosError) })}\n\n`
-      )
-      res.end()
+      markTestFinished()
+      if (!clientClosed) {
+        finishTestSse(res, false, sanitizeApiKeyTestError(axiosError))
+      }
     }
   } catch (error) {
     logger.error('❌ OpenAI API Key test failed:', error)

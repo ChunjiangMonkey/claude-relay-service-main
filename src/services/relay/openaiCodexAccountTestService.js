@@ -4,13 +4,11 @@ const openaiAccountService = require('../account/openaiAccountService')
 const ProxyHelper = require('../../utils/proxyHelper')
 const logger = require('../../utils/logger')
 const { buildCodexUpstreamHeaders } = require('../../utils/openaiCodexUpstreamHeaders')
-const { extractErrorMessage } = require('../../utils/testPayloadHelper')
+const { createCodexTestPayload, extractErrorMessage } = require('../../utils/testPayloadHelper')
 const { getSafeMessage, mapToErrorCode } = require('../../utils/errorSanitizer')
 
 const DEFAULT_CODEX_TEST_MODEL = 'gpt-5.5'
 const CODEX_TEST_ENDPOINT = 'https://chatgpt.com/backend-api/codex/responses'
-const CODEX_TEST_INSTRUCTIONS =
-  'You are Codex, based on GPT-5. Reply with a short account connectivity check.'
 const CAPTURE_SKIP_HEADER = 'x-relay-capture-skip'
 const CAPTURE_SKIP_REASON = 'admin-openai-account-test'
 const TEST_TIMEOUT_MS = 30000
@@ -23,33 +21,6 @@ function normalizeModel(model) {
     return DEFAULT_CODEX_TEST_MODEL
   }
   return model.trim()
-}
-
-function getCodexCompatibleModel(requestedModel = null) {
-  const isCodexModel =
-    typeof requestedModel === 'string' && requestedModel.toLowerCase().includes('codex')
-
-  if (requestedModel && requestedModel.startsWith('gpt-5-') && !isCodexModel) {
-    return 'gpt-5'
-  }
-
-  return requestedModel
-}
-
-function createCodexTestPayload(testModel) {
-  return {
-    model: getCodexCompatibleModel(testModel),
-    input: [
-      {
-        type: 'message',
-        role: 'user',
-        content: [{ type: 'input_text', text: 'hi' }]
-      }
-    ],
-    instructions: CODEX_TEST_INSTRUCTIONS,
-    stream: true,
-    store: false
-  }
 }
 
 function sanitizeCodexTestError(message, statusCode = null) {
@@ -245,6 +216,7 @@ async function readLimitedErrorBody(stream) {
     })
     stream.on('end', finish)
     stream.on('error', finish)
+    stream.on('close', finish)
   })
 }
 

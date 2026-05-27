@@ -1,6 +1,10 @@
 const crypto = require('crypto')
 const { mapToErrorCode } = require('./errorSanitizer')
 
+const DEFAULT_CODEX_TEST_MODEL = 'gpt-5.5'
+const CODEX_TEST_INSTRUCTIONS =
+  "You are Codex, based on GPT-5. You are running as a coding agent in the Codex CLI on a user's computer.\n\nReply with a short account connectivity check."
+
 // 将原始错误信息映射为安全的标准错误码消息
 const sanitizeErrorMsg = (msg) => {
   const mapped = mapToErrorCode({ message: msg }, { logOriginal: false })
@@ -24,6 +28,38 @@ function generateSessionString() {
   const hex64 = randomHex(32) // 32 bytes => 64 hex characters
   const uuid = crypto.randomUUID()
   return `user_${hex64}_account__session_${uuid}`
+}
+
+function generateCodexTestSessionId() {
+  return `codex_test_${crypto.randomUUID()}_${randomHex(8)}`
+}
+
+function getCodexCompatibleModel(requestedModel = null) {
+  const isCodexModel =
+    typeof requestedModel === 'string' && requestedModel.toLowerCase().includes('codex')
+
+  if (requestedModel && requestedModel.startsWith('gpt-5-') && !isCodexModel) {
+    return 'gpt-5'
+  }
+
+  return requestedModel
+}
+
+function createCodexTestPayload(model = DEFAULT_CODEX_TEST_MODEL, options = {}) {
+  const { prompt = 'hi', stream = true } = options
+  return {
+    model: getCodexCompatibleModel(model),
+    input: [
+      {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: prompt }]
+      }
+    ],
+    instructions: CODEX_TEST_INSTRUCTIONS,
+    stream,
+    store: false
+  }
 }
 
 /**
@@ -354,11 +390,16 @@ function extractErrorMessage(json, fallback) {
 module.exports = {
   randomHex,
   generateSessionString,
+  generateCodexTestSessionId,
   createClaudeTestPayload,
+  createCodexTestPayload,
   createGeminiTestPayload,
   createOpenAITestPayload,
   createChatCompletionsTestPayload,
   extractErrorMessage,
   sanitizeErrorMsg,
-  sendStreamTestRequest
+  sendStreamTestRequest,
+  CODEX_TEST_INSTRUCTIONS,
+  DEFAULT_CODEX_TEST_MODEL,
+  getCodexCompatibleModel
 }
