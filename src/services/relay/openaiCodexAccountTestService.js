@@ -4,19 +4,16 @@ const openaiAccountService = require('../account/openaiAccountService')
 const ProxyHelper = require('../../utils/proxyHelper')
 const logger = require('../../utils/logger')
 const { buildCodexUpstreamHeaders } = require('../../utils/openaiCodexUpstreamHeaders')
-const {
-  createOpenAITestPayload,
-  extractErrorMessage,
-  sanitizeErrorMsg
-} = require('../../utils/testPayloadHelper')
-const { getSafeMessage } = require('../../utils/errorSanitizer')
+const { extractErrorMessage } = require('../../utils/testPayloadHelper')
+const { getSafeMessage, mapToErrorCode } = require('../../utils/errorSanitizer')
 
 const DEFAULT_CODEX_TEST_MODEL = 'gpt-5.5'
 const CODEX_TEST_ENDPOINT = 'https://chatgpt.com/backend-api/codex/responses'
+const CODEX_TEST_INSTRUCTIONS =
+  'You are Codex, based on GPT-5. Reply with a short account connectivity check.'
 const CAPTURE_SKIP_HEADER = 'x-relay-capture-skip'
 const CAPTURE_SKIP_REASON = 'admin-openai-account-test'
 const TEST_TIMEOUT_MS = 30000
-const TEST_MAX_OUTPUT_TOKENS = 64
 const MAX_ERROR_BODY_BYTES = 64 * 1024
 const MAX_RESPONSE_PREVIEW_CHARS = 2000
 const MAX_SSE_LINE_CHARS = 64 * 1024
@@ -26,6 +23,44 @@ function normalizeModel(model) {
     return DEFAULT_CODEX_TEST_MODEL
   }
   return model.trim()
+}
+
+function getCodexCompatibleModel(requestedModel = null) {
+  const isCodexModel =
+    typeof requestedModel === 'string' && requestedModel.toLowerCase().includes('codex')
+
+  if (requestedModel && requestedModel.startsWith('gpt-5-') && !isCodexModel) {
+    return 'gpt-5'
+  }
+
+  return requestedModel
+}
+
+function createCodexTestPayload(testModel) {
+  return {
+    model: getCodexCompatibleModel(testModel),
+    input: [
+      {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'hi' }]
+      }
+    ],
+    instructions: CODEX_TEST_INSTRUCTIONS,
+    stream: true,
+    store: false
+  }
+}
+
+function sanitizeCodexTestError(message, statusCode = null) {
+  const mapped = mapToErrorCode(
+    {
+      message,
+      statusCode
+    },
+    { logOriginal: false }
+  )
+  return `[${mapped.code}] ${mapped.message}`
 }
 
 function createHttpError(message, statusCode) {
@@ -348,22 +383,18 @@ async function runPreparedTest({
       requestConfig.proxy = false
     }
 
-    const payload = createOpenAITestPayload(testModel, {
-      prompt: 'hi',
-      maxTokens: TEST_MAX_OUTPUT_TOKENS,
-      stream: true
-    })
+    const payload = createCodexTestPayload(testModel)
 
     const upstream = await axios.post(CODEX_TEST_ENDPOINT, payload, requestConfig)
     upstreamStream = upstream.data
 
     if (upstream.status !== 200) {
       const { body, truncated } = await readLimitedErrorBody(upstreamStream)
-      const fallback = `Codex upstream returned HTTP ${upstream.status}`
+      const fallback = `Codex test request returned HTTP ${upstream.status}`
       const error = extractErrorFromBody(body, fallback)
       return {
         success: false,
-        error: sanitizeErrorMsg(truncated ? `${error} (truncated)` : error),
+        error: sanitizeCodexTestError(truncated ? `${error} (truncated)` : error, upstream.status),
         httpStatus: upstream.status,
         latencyMs: Date.now() - startedAt,
         model: testModel,
@@ -386,7 +417,7 @@ async function runPreparedTest({
     if (state.error || state.status === 'failed' || state.status === 'cancelled') {
       return {
         success: false,
-        error: sanitizeErrorMsg(state.error || `Codex response status: ${state.status}`),
+        error: sanitizeCodexTestError(state.error || `Codex response status: ${state.status}`),
         httpStatus: upstream.status,
         latencyMs: Date.now() - startedAt,
         model: testModel,
