@@ -20,6 +20,8 @@ global[PATCH_SENTINEL] = true
 const REQUESTS_FILE = 'openai-upstream-requests.jsonl'
 const RESPONSES_FILE = 'openai-upstream-responses.jsonl'
 const STREAM_FINAL_FILE = 'openai-upstream-stream-final.jsonl'
+const CAPTURE_SKIP_HEADER = 'x-relay-capture-skip'
+const CAPTURE_SKIP_REASON = 'admin-openai-account-test'
 
 const DEFAULT_CAPTURE_DIR = '/data/relay-capture'
 const DEFAULT_MAX_RECORD_BYTES = 16 * 1024 * 1024
@@ -339,6 +341,9 @@ function shouldCaptureRequest(meta) {
   if (!meta || !meta.hostname) {
     return false
   }
+  if (shouldSkipCaptureRequest(meta)) {
+    return false
+  }
   if (!config.hosts.has(meta.hostname)) {
     return false
   }
@@ -355,6 +360,13 @@ function shouldCaptureRequest(meta) {
     return true
   }
   return config.capturePathPrefixes.some((prefix) => String(meta.path || '').startsWith(prefix))
+}
+
+function shouldSkipCaptureRequest(meta) {
+  return (
+    String(getHeaderCaseInsensitive(meta?.headers, CAPTURE_SKIP_HEADER) || '') ===
+    CAPTURE_SKIP_REASON
+  )
 }
 
 function determineProviderKind(meta) {
@@ -388,18 +400,20 @@ function getHeaderCaseInsensitive(headers, targetKey) {
 }
 
 function stripInternalHeaders(requestArgs) {
-  const targetKey = 'x-relay-key-id'
+  const targetKeys = new Set(['x-relay-key-id', CAPTURE_SKIP_HEADER])
   const deleteHeaderCaseInsensitive = (headers) => {
     if (!headers) {
       return
     }
     if (typeof headers.delete === 'function') {
-      headers.delete(targetKey)
+      for (const targetKey of targetKeys) {
+        headers.delete(targetKey)
+      }
       return
     }
     if (Array.isArray(headers)) {
       for (let index = headers.length - 2; index >= 0; index -= 2) {
-        if (String(headers[index]).toLowerCase() === targetKey) {
+        if (targetKeys.has(String(headers[index]).toLowerCase())) {
           headers.splice(index, 2)
         }
       }
@@ -407,7 +421,7 @@ function stripInternalHeaders(requestArgs) {
     }
     if (typeof headers === 'object') {
       for (const key of Object.keys(headers)) {
-        if (String(key).toLowerCase() === targetKey) {
+        if (targetKeys.has(String(key).toLowerCase())) {
           delete headers[key]
         }
       }
@@ -1319,6 +1333,10 @@ function patchHttpsRequest() {
 
   https.request = function patchedRequest(...args) {
     const requestMeta = normalizeRequestMeta(args[0], args[1])
+    if (shouldSkipCaptureRequest(requestMeta)) {
+      stripInternalHeaders(args)
+      return originalRequest.apply(this, args)
+    }
     if (!shouldCaptureRequest(requestMeta)) {
       return originalRequest.apply(this, args)
     }

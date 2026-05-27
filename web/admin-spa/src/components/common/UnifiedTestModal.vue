@@ -148,6 +148,66 @@
             </div>
           </div>
 
+          <!-- [account+openai] 测试历史 -->
+          <div v-if="supportsAccountTestHistory" class="mb-4">
+            <div class="mb-2 flex items-center justify-between">
+              <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                最近测试记录
+              </label>
+              <button
+                class="text-xs text-gray-400 transition hover:text-gray-600 dark:hover:text-gray-300"
+                :disabled="historyLoading"
+                @click="loadTestHistory"
+              >
+                <i :class="['fas', historyLoading ? 'fa-spinner fa-spin' : 'fa-rotate-right']" />
+              </button>
+            </div>
+            <div
+              class="max-h-28 overflow-y-auto rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs dark:border-gray-700 dark:bg-gray-800/50"
+            >
+              <div
+                v-if="historyLoading"
+                class="flex items-center justify-center gap-2 py-2 text-gray-500 dark:text-gray-400"
+              >
+                <i class="fas fa-spinner fa-spin" />
+                加载中...
+              </div>
+              <div
+                v-else-if="testHistory.length === 0"
+                class="py-2 text-center text-gray-400 dark:text-gray-500"
+              >
+                暂无测试记录
+              </div>
+              <div v-else class="space-y-2">
+                <div
+                  v-for="(record, index) in testHistory"
+                  :key="index"
+                  class="flex items-center justify-between gap-2"
+                >
+                  <div class="flex min-w-0 items-center gap-2">
+                    <i
+                      :class="[
+                        'fas flex-shrink-0',
+                        record.success
+                          ? 'fa-check-circle text-green-500'
+                          : 'fa-times-circle text-red-500'
+                      ]"
+                    />
+                    <span class="flex-shrink-0 text-gray-500 dark:text-gray-400">
+                      {{ formatHistoryTime(record.timestamp) }}
+                    </span>
+                    <span v-if="record.error" class="truncate text-red-500" :title="record.error">
+                      {{ record.error }}
+                    </span>
+                  </div>
+                  <span v-if="record.latencyMs" class="flex-shrink-0 text-gray-400">
+                    {{ record.latencyMs }}ms
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <!-- [apikey] 提示词输入 -->
           <div v-if="mode === 'apikey'" class="mb-4">
             <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -300,6 +360,8 @@ const props = defineProps({
 
 const emit = defineEmits(['close'])
 const state = useTestState()
+const testHistory = ref([])
+const historyLoading = ref(false)
 
 // ========== 模型相关 ==========
 const selectedModel = ref('')
@@ -328,12 +390,17 @@ const availableModels = computed(() => {
   return modelsFromApi.value[props.serviceType] || []
 })
 
+const supportsAccountTestHistory = computed(
+  () => props.mode === 'account' && props.account?.platform === 'openai'
+)
+
 // 各平台回退默认模型（模型列表未加载时使用）
 const platformFallbackModels = {
   claude: 'claude-sonnet-4-5-20250929',
   'claude-console': 'claude-sonnet-4-5-20250929',
   gemini: 'gemini-2.5-pro',
   'gemini-api': 'gemini-2.5-flash',
+  openai: 'gpt-5.5',
   'openai-responses': 'gpt-5',
   droid: 'claude-sonnet-4-5-20250929',
   ccr: 'claude-sonnet-4-5-20250929'
@@ -352,11 +419,23 @@ const defaultModel = computed(() => {
       return 'us.anthropic.claude-3-5-haiku-20241022-v1:0'
     }
     const models = availableModels.value
+    if (
+      platform === 'openai' &&
+      models.some((item) => item.value === platformFallbackModels.openai)
+    ) {
+      return platformFallbackModels.openai
+    }
     if (models.length > 0) return models[0].value
     return platformFallbackModels[platform] || platformFallbackModels.claude
   }
   // apikey 模式: 优先用列表，回退用 serviceConfig 的 defaultModel
   const models = availableModels.value
+  if (
+    props.serviceType === 'openai' &&
+    models.some((item) => item.value === apikeyServiceConfig.value.defaultModel)
+  ) {
+    return apikeyServiceConfig.value.defaultModel
+  }
   if (models.length > 0) return models[0].value
   return apikeyServiceConfig.value.defaultModel
 })
@@ -388,7 +467,7 @@ const apikeyServiceConfigs = {
   openai: {
     name: 'OpenAI (Codex)',
     endpoint: '/api-key/test-openai',
-    defaultModel: 'gpt-5',
+    defaultModel: 'gpt-5.5',
     displayEndpoint: '/openai/responses'
   }
 }
@@ -432,6 +511,11 @@ const platformConfigs = {
     label: 'Gemini API',
     icon: 'fas fa-gem',
     badge: 'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300'
+  },
+  openai: {
+    label: 'OpenAI (Codex)',
+    icon: 'fas fa-robot',
+    badge: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300'
   },
   'openai-responses': {
     label: 'OpenAI Responses',
@@ -517,6 +601,47 @@ const statusDescription = computed(() => {
   return ''
 })
 
+const getAccountHistoryEndpoint = () => {
+  if (!props.account || props.account.platform !== 'openai') return ''
+  return `${APP_CONFIG.apiPrefix}/admin/openai-accounts/${props.account.id}/test-history`
+}
+
+const formatHistoryTime = (timestamp) => {
+  if (!timestamp) return '未知'
+  return new Date(timestamp).toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+}
+
+const loadTestHistory = async () => {
+  if (!supportsAccountTestHistory.value) {
+    testHistory.value = []
+    return
+  }
+
+  const endpoint = getAccountHistoryEndpoint()
+  if (!endpoint) return
+
+  historyLoading.value = true
+  testHistory.value = []
+  try {
+    const authToken = localStorage.getItem('authToken')
+    const response = await fetch(endpoint, {
+      headers: authToken ? { Authorization: `Bearer ${authToken}` } : {}
+    })
+    if (!response.ok) return
+    const data = await response.json()
+    testHistory.value = Array.isArray(data.data?.history) ? data.data.history : []
+  } catch {
+    testHistory.value = []
+  } finally {
+    historyLoading.value = false
+  }
+}
+
 // ========== 测试逻辑 ==========
 const getAccountEndpoint = () => {
   if (!props.account) return ''
@@ -527,6 +652,7 @@ const getAccountEndpoint = () => {
     bedrock: `${APP_CONFIG.apiPrefix}/admin/bedrock-accounts/${props.account.id}/test`,
     gemini: `${APP_CONFIG.apiPrefix}/admin/gemini-accounts/${props.account.id}/test`,
     'gemini-api': `${APP_CONFIG.apiPrefix}/admin/gemini-api-accounts/${props.account.id}/test`,
+    openai: `${APP_CONFIG.apiPrefix}/admin/openai-accounts/${props.account.id}/test`,
     'openai-responses': `${APP_CONFIG.apiPrefix}/admin/openai-responses-accounts/${props.account.id}/test`,
     'azure-openai': `${APP_CONFIG.apiPrefix}/admin/azure-openai-accounts/${props.account.id}/test`,
     droid: `${APP_CONFIG.apiPrefix}/admin/droid-accounts/${props.account.id}/test`,
@@ -540,17 +666,19 @@ const startTest = () => {
     const endpoint = getAccountEndpoint()
     if (!endpoint) return
     const authToken = localStorage.getItem('authToken')
-    const useSSE = ['claude', 'claude-console', 'bedrock', 'gemini-api'].includes(
+    const useSSE = ['claude', 'claude-console', 'bedrock', 'gemini-api', 'openai'].includes(
       props.account.platform
     )
-    state.sendTestRequest(
-      endpoint,
-      { model: selectedModel.value },
-      {
-        useSSE,
-        headers: authToken ? { Authorization: `Bearer ${authToken}` } : {}
-      }
-    )
+    state
+      .sendTestRequest(
+        endpoint,
+        { model: selectedModel.value },
+        {
+          useSSE,
+          headers: authToken ? { Authorization: `Bearer ${authToken}` } : {}
+        }
+      )
+      .finally(() => loadTestHistory())
   } else {
     const endpoint = `${APP_CONFIG.apiPrefix}/apiStats${apikeyServiceConfig.value.endpoint}`
     state.sendTestRequest(
@@ -580,6 +708,7 @@ watch(
     if (newVal) {
       state.resetState()
       selectedModel.value = defaultModel.value
+      loadTestHistory()
       if (props.mode === 'apikey') {
         testPrompt.value = 'hi'
         maxTokens.value = 1000
@@ -592,6 +721,9 @@ watch(
   () => [props.account, props.serviceType],
   () => {
     selectedModel.value = defaultModel.value
+    if (props.show) {
+      loadTestHistory()
+    }
   },
   { deep: true }
 )
