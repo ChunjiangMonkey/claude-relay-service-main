@@ -7,6 +7,7 @@ const express = require('express')
 const crypto = require('crypto')
 const axios = require('axios')
 const openaiAccountService = require('../../services/account/openaiAccountService')
+const openaiCodexAccountTestService = require('../../services/relay/openaiCodexAccountTestService')
 const accountGroupService = require('../../services/accountGroupService')
 const apiKeyService = require('../../services/apiKeyService')
 const redis = require('../../models/redis')
@@ -17,6 +18,7 @@ const webhookNotifier = require('../../utils/webhookNotifier')
 const { formatAccountExpiry, mapExpiryField } = require('./utils')
 
 const router = express.Router()
+const DEFAULT_CODEX_TEST_MODEL = openaiCodexAccountTestService.DEFAULT_CODEX_TEST_MODEL
 
 // OpenAI OAuth 配置
 const OPENAI_CONFIG = {
@@ -822,6 +824,120 @@ router.put('/:accountId/toggle-schedulable', authenticateAdmin, async (req, res)
       success: false,
       message: '切换调度状态失败',
       error: error.message
+    })
+  }
+})
+
+// 测试 OpenAI/Codex 官方账户连通性（流式响应）
+router.post('/:accountId/test', authenticateAdmin, async (req, res) => {
+  const { accountId } = req.params
+  const model =
+    typeof req.body?.model === 'string' && req.body.model.trim()
+      ? req.body.model.trim()
+      : DEFAULT_CODEX_TEST_MODEL
+
+  try {
+    await openaiCodexAccountTestService.testAccountConnection(accountId, res, model, {
+      onResult: async (testResult) => {
+        await redis.saveAccountTestResult(accountId, 'openai', testResult)
+        await redis.setAccountLastTestTime(accountId, 'openai')
+      }
+    })
+  } catch (error) {
+    logger.error(`❌ Failed to test OpenAI/Codex account ${accountId}:`, error)
+    if (!res.headersSent) {
+      return res.status(error.statusCode || 500).json({
+        error: 'Failed to run test',
+        message: error.message
+      })
+    }
+  }
+})
+
+// 获取 OpenAI/Codex 官方账户测试历史
+router.get('/:accountId/test-history', authenticateAdmin, async (req, res) => {
+  const { accountId } = req.params
+
+  try {
+    const history = await redis.getAccountTestHistory(accountId, 'openai')
+    return res.json({
+      success: true,
+      data: {
+        accountId,
+        platform: 'openai',
+        history
+      }
+    })
+  } catch (error) {
+    logger.error(`❌ Failed to get OpenAI/Codex test history for account ${accountId}:`, error)
+    return res.status(500).json({
+      error: 'Failed to get test history',
+      message: error.message
+    })
+  }
+})
+
+// 手动触发 OpenAI/Codex 官方账户测试（非流式，返回 JSON 并保存历史）
+router.post('/:accountId/test-sync', authenticateAdmin, async (req, res) => {
+  const { accountId } = req.params
+  const model =
+    typeof req.body?.model === 'string' && req.body.model.trim()
+      ? req.body.model.trim()
+      : DEFAULT_CODEX_TEST_MODEL
+
+  try {
+    const testResult = await openaiCodexAccountTestService.testAccountConnectionSync(
+      accountId,
+      model
+    )
+
+    await redis.saveAccountTestResult(accountId, 'openai', testResult)
+    await redis.setAccountLastTestTime(accountId, 'openai')
+
+    return res.json({
+      success: true,
+      data: {
+        accountId,
+        platform: 'openai',
+        result: testResult
+      }
+    })
+  } catch (error) {
+    logger.error(`❌ Failed to run OpenAI/Codex sync test for account ${accountId}:`, error)
+    return res.status(error.statusCode || 500).json({
+      error: 'Failed to run test',
+      message: error.message
+    })
+  }
+})
+
+// 批量获取 OpenAI/Codex 官方账户测试历史
+router.post('/batch-test-history', authenticateAdmin, async (req, res) => {
+  const { accountIds } = req.body
+
+  try {
+    if (!Array.isArray(accountIds) || accountIds.length === 0) {
+      return res.status(400).json({
+        error: 'Invalid parameter',
+        message: 'accountIds must be a non-empty array'
+      })
+    }
+
+    const accounts = accountIds.slice(0, 100).map((accountId) => ({
+      accountId,
+      platform: 'openai'
+    }))
+
+    const historyMap = await redis.getAccountsTestHistory(accounts)
+    return res.json({
+      success: true,
+      data: historyMap
+    })
+  } catch (error) {
+    logger.error('❌ Failed to batch get OpenAI/Codex test history:', error)
+    return res.status(500).json({
+      error: 'Failed to batch get test history',
+      message: error.message
     })
   }
 })

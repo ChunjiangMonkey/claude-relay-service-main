@@ -1369,7 +1369,7 @@
                       <span class="ml-1">测试</span>
                     </button>
                     <button
-                      v-if="canTestAccount(account)"
+                      v-if="canScheduleTestAccount(account)"
                       class="rounded bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:hover:bg-amber-800/50"
                       title="定时测试配置"
                       @click="openScheduledTestModal(account)"
@@ -1901,7 +1901,7 @@
             </button>
 
             <button
-              v-if="canTestAccount(account)"
+              v-if="canScheduleTestAccount(account)"
               class="flex flex-1 items-center justify-center gap-1 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-600 transition-colors hover:bg-amber-100 dark:bg-amber-900/40 dark:text-amber-300 dark:hover:bg-amber-800/50"
               @click="openScheduledTestModal(account)"
             >
@@ -2689,6 +2689,9 @@ const getAccountActions = (account) => {
       color: 'blue',
       handler: () => openAccountTestModal(account)
     })
+  }
+
+  if (canScheduleTestAccount(account)) {
     actions.push({
       key: 'scheduled-test',
       label: '定时测试',
@@ -2750,14 +2753,21 @@ const supportedTestPlatforms = [
   'bedrock',
   'gemini',
   'gemini-api',
+  'openai',
   'openai-responses',
   'azure-openai',
   'droid',
   'ccr'
 ]
 
+const supportedScheduledTestPlatforms = ['claude']
+
 const canTestAccount = (account) => {
   return !!account && supportedTestPlatforms.includes(account.platform)
+}
+
+const canScheduleTestAccount = (account) => {
+  return !!account && supportedScheduledTestPlatforms.includes(account.platform)
 }
 
 const openAccountTestModal = (account) => {
@@ -2776,7 +2786,7 @@ const closeAccountTestModal = () => {
 
 // 定时测试配置相关函数
 const openScheduledTestModal = (account) => {
-  if (!canTestAccount(account)) {
+  if (!canScheduleTestAccount(account)) {
     showToast('该账户类型暂不支持定时测试', 'warning')
     return
   }

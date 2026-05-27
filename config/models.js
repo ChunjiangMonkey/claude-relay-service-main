@@ -62,6 +62,7 @@ const PLATFORM_TEST_MODELS = {
   bedrock: BEDROCK_MODELS,
   gemini: GEMINI_MODELS,
   'gemini-api': GEMINI_MODELS,
+  openai: OPENAI_MODELS,
   'openai-responses': OPENAI_MODELS,
   'azure-openai': [],
   droid: CLAUDE_MODELS,

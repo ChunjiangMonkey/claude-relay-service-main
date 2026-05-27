@@ -512,6 +512,47 @@ describe('capture hooks memory-safe semantic output', () => {
     expect(responseRows[0].response.status).toBe('completed')
   })
 
+  test('openai capture skip header bypasses capture and is stripped before upstream', async () => {
+    process.env.OPENAI_CAPTURE_ENABLED = 'true'
+    process.env.OPENAI_CAPTURE_DIR = tempDir
+    process.env.OPENAI_CAPTURE_HOSTS = 'api.openai.com,chatgpt.com'
+    process.env.OPENAI_CAPTURE_PATH_PREFIXES =
+      '/v1/responses,/responses,/backend-api/codex/responses'
+
+    let capturedOptions = null
+    https.request = jest.fn((options) => {
+      capturedOptions = options
+      const req = new EventEmitter()
+      req.write = jest.fn()
+      req.end = jest.fn()
+      return req
+    })
+
+    loadCommonJsHook('extensions/openai-capture/hook/openai-hook.js')
+
+    const req = https.request({
+      protocol: 'https:',
+      hostname: 'chatgpt.com',
+      host: 'chatgpt.com',
+      path: '/backend-api/codex/responses',
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-token',
+        'x-relay-capture-skip': 'admin-openai-account-test'
+      }
+    })
+
+    req.write(JSON.stringify({ model: 'gpt-5.5', stream: true }))
+    req.end()
+
+    expect(capturedOptions.headers.authorization).toBe('Bearer test-token')
+    expect(capturedOptions.headers['x-relay-capture-skip']).toBeUndefined()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(fsSync.existsSync(path.join(tempDir, 'openai-upstream-requests.jsonl'))).toBe(false)
+    expect(fsSync.existsSync(path.join(tempDir, 'openai-upstream-responses.jsonl'))).toBe(false)
+    expect(fsSync.existsSync(path.join(tempDir, 'openai-upstream-stream-final.jsonl'))).toBe(false)
+  })
+
   test('openai gzip stream captures semantics and audit when content-encoding is missing', async () => {
     process.env.OPENAI_CAPTURE_ENABLED = 'true'
     process.env.OPENAI_CAPTURE_DIR = tempDir
