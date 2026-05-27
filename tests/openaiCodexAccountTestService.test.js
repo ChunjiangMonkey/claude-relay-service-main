@@ -98,8 +98,17 @@ describe('openaiCodexAccountTestService', () => {
     expect(payload).toMatchObject({
       model: 'gpt-5.5',
       stream: true,
-      max_output_tokens: 64
+      store: false,
+      instructions: expect.stringContaining('You are Codex')
     })
+    expect(payload.max_output_tokens).toBeUndefined()
+    expect(payload.input).toEqual([
+      {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'hi' }]
+      }
+    ])
     expect(requestConfig).toMatchObject({
       timeout: 30000,
       responseType: 'stream',
@@ -111,6 +120,34 @@ describe('openaiCodexAccountTestService', () => {
       accept: 'text/event-stream',
       'content-type': 'application/json',
       'x-relay-capture-skip': 'admin-openai-account-test'
+    })
+  })
+
+  it('normalizes dated gpt-5 model names for the Codex backend only', async () => {
+    const upstream = new PassThrough()
+    axios.post.mockResolvedValue({
+      status: 200,
+      data: upstream
+    })
+
+    const resultPromise = openaiCodexAccountTestService.testAccountConnectionSync(
+      'acct-1',
+      'gpt-5-2025-08-07'
+    )
+    await Promise.resolve()
+    upstream.end(createCompletedSse('gpt-5'))
+
+    const result = await resultPromise
+
+    expect(result).toMatchObject({
+      success: true,
+      model: 'gpt-5-2025-08-07',
+      responseModel: 'gpt-5'
+    })
+    expect(axios.post.mock.calls[0][1]).toMatchObject({
+      model: 'gpt-5',
+      stream: true,
+      store: false
     })
   })
 
@@ -181,6 +218,25 @@ describe('openaiCodexAccountTestService', () => {
       success: false,
       error: '[E004] Rate limit exceeded',
       httpStatus: 429,
+      model: 'gpt-5.5'
+    })
+  })
+
+  it('keeps HTTP status-specific error codes when the upstream body is empty', async () => {
+    const upstream = new PassThrough()
+    axios.post.mockResolvedValue({
+      status: 401,
+      data: upstream
+    })
+
+    const resultPromise = openaiCodexAccountTestService.testAccountConnectionSync('acct-1')
+    await Promise.resolve()
+    upstream.end('')
+
+    await expect(resultPromise).resolves.toMatchObject({
+      success: false,
+      error: '[E003] Authentication failed',
+      httpStatus: 401,
       model: 'gpt-5.5'
     })
   })
