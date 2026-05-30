@@ -46,6 +46,7 @@
     "data:export:encrypted": "node scripts/data-transfer-enhanced.js export --decrypt=false",
     "data:import:enhanced": "node scripts/data-transfer-enhanced.js import",
     "data:debug": "node scripts/debug-redis-keys.js",
+    "capture:status": "node extensions/anthropic-capture/collector/src/status.js",
     "test:pricing-fallback": "node scripts/test-pricing-fallback.js"
   },
   "dependencies": {
