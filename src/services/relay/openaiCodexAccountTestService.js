@@ -4,7 +4,13 @@ const openaiAccountService = require('../account/openaiAccountService')
 const ProxyHelper = require('../../utils/proxyHelper')
 const logger = require('../../utils/logger')
 const { buildCodexUpstreamHeaders } = require('../../utils/openaiCodexUpstreamHeaders')
-const { createCodexTestPayload, extractErrorMessage } = require('../../utils/testPayloadHelper')
+const {
+  createCodexTestPayload,
+  createCodexTestRequestContext,
+  createCodexTestIncomingHeaders,
+  applyCodexResponsesLitePayload,
+  extractErrorMessage
+} = require('../../utils/testPayloadHelper')
 const { getSafeMessage, mapToErrorCode } = require('../../utils/errorSanitizer')
 
 const DEFAULT_CODEX_TEST_MODEL = 'gpt-5.5'
@@ -153,7 +159,12 @@ function processSsePayload(state, payload, onContent) {
     applyResponseSnapshot(state, payload.response)
   }
 
-  if (payload.error) {
+  if (
+    payload.error ||
+    payload.response?.error ||
+    payload.type === 'response.failed' ||
+    payload.response?.status === 'failed'
+  ) {
     state.error = extractErrorMessage(payload, 'Codex test stream returned an error')
     return
   }
@@ -300,15 +311,7 @@ async function processUpstreamStream(stream, state, onContent) {
   })
 }
 
-async function runPreparedTest({
-  accountId,
-  account,
-  accessToken,
-  proxy,
-  model,
-  onContent,
-  responseStream
-}) {
+async function runPreparedTest({ account, accessToken, proxy, model, onContent, responseStream }) {
   const testModel = normalizeModel(model)
   const startedAt = Date.now()
   const controller = new AbortController()
@@ -330,11 +333,11 @@ async function runPreparedTest({
   }
 
   try {
+    const context = createCodexTestRequestContext()
     const headers = buildCodexUpstreamHeaders({
-      incomingHeaders: {},
+      incomingHeaders: createCodexTestIncomingHeaders(context),
       accessToken,
       account,
-      accountId,
       isStream: true,
       apiKeyId: null,
       model: testModel
@@ -356,7 +359,7 @@ async function runPreparedTest({
       requestConfig.proxy = false
     }
 
-    const payload = createCodexTestPayload(testModel)
+    const payload = applyCodexResponsesLitePayload(createCodexTestPayload(testModel, { context }))
 
     const upstream = await axios.post(CODEX_TEST_ENDPOINT, payload, requestConfig)
     upstreamStream = upstream.data
@@ -454,7 +457,6 @@ async function testAccountConnection(
     const prepared = await prepareAccount(accountId)
     const result = await runPreparedTest({
       ...prepared,
-      accountId,
       model,
       responseStream,
       onContent: (text) => safeWriteSse(responseStream, { type: 'content', text })
@@ -499,7 +501,6 @@ async function testAccountConnectionSync(accountId, model = DEFAULT_CODEX_TEST_M
     const prepared = await prepareAccount(accountId)
     return await runPreparedTest({
       ...prepared,
-      accountId,
       model
     })
   } catch (error) {

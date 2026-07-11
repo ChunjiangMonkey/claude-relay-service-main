@@ -76,7 +76,7 @@ describe('buildCodexUpstreamHeaders', () => {
     })
   })
 
-  it('adds relay key for chatgpt codex headers when hook is active', () => {
+  it('does not substitute a user ID or relay account ID for the workspace ID', () => {
     global[OPENAI_CAPTURE_HOOK_ACTIVE] = true
 
     const headers = buildCodexUpstreamHeaders({
@@ -90,12 +90,31 @@ describe('buildCodexUpstreamHeaders', () => {
 
     expect(headers).toEqual({
       authorization: 'Bearer access-token',
-      'chatgpt-account-id': 'user-123',
       host: 'chatgpt.com',
       accept: 'application/json',
       'content-type': 'application/json',
       'x-relay-key-id': 'relay-key-1'
     })
+  })
+
+  it('recovers the workspace ID from a decrypted ID token', () => {
+    const tokenPayload = Buffer.from(
+      JSON.stringify({
+        'https://api.openai.com/auth': {
+          chatgpt_account_id: 'workspace-from-token'
+        }
+      })
+    ).toString('base64url')
+
+    const headers = buildCodexUpstreamHeaders({
+      incomingHeaders: {},
+      accessToken: 'access-token',
+      account: { idToken: `header.${tokenPayload}.signature` },
+      isStream: true,
+      apiKeyId: null
+    })
+
+    expect(headers['chatgpt-account-id']).toBe('workspace-from-token')
   })
 
   it('selects the Responses Lite route for GPT-5.6 models', () => {

@@ -147,10 +147,14 @@ describe('OpenAI/Codex API Key test route', () => {
       'Content-Type': 'application/json',
       Accept: 'text/event-stream',
       'x-api-key': 'cr_test_key_12345',
-      'User-Agent': 'codex_cli_rs/1.0.0',
-      originator: 'codex_cli_rs'
+      'User-Agent': 'codex_cli_rs/0.144.1',
+      originator: 'codex_cli_rs',
+      version: '0.144.1'
     })
     expect(config.headers.session_id).toMatch(/^codex_test_/)
+    expect(config.headers['session-id']).toBe(config.headers.session_id)
+    expect(config.headers['thread-id']).toBe(config.headers.session_id)
+    expect(config.headers['x-client-request-id']).toBe(config.headers.session_id)
     expect(
       CodexCliValidator.validate({
         path: '/openai/responses',
@@ -175,6 +179,31 @@ describe('OpenAI/Codex API Key test route', () => {
     const response = await responsePromise
     expect(response.status).toBe(200)
     expect(response.text).toContain('"type":"content","text":"ok"')
+    expect(response.text).toContain('"type":"test_complete","success":true')
+  })
+
+  it('leaves GPT-5.6 Lite conversion to the selected relay account type', async () => {
+    const upstream = new PassThrough()
+    axios.post.mockResolvedValue({
+      status: 200,
+      data: upstream
+    })
+
+    const responsePromise = startOpenAITestRequest({
+      apiKey: 'cr_test_key_12345',
+      model: 'gpt-5.6-luna'
+    })
+
+    await waitForAxiosPost()
+    const payload = axios.post.mock.calls[0][1]
+    expect(payload.model).toBe('gpt-5.6-luna')
+    expect(payload.instructions).toEqual(expect.stringContaining('You are Codex'))
+    expect(payload.input[0].type).toBe('message')
+    expect(payload.input.some((item) => item.type === 'additional_tools')).toBe(false)
+    expect(payload.reasoning).toBeUndefined()
+
+    upstream.end('data: {"type":"response.completed","response":{"status":"completed"}}\n\n')
+    const response = await responsePromise
     expect(response.text).toContain('"type":"test_complete","success":true')
   })
 
@@ -241,6 +270,28 @@ describe('OpenAI/Codex API Key test route', () => {
     expect(response.status).toBe(200)
     expect(response.text).toContain('"success":false')
     expect(response.text).toContain('[E004] Rate limit exceeded')
+  })
+
+  it('returns the nested error from response.failed SSE events', async () => {
+    const upstream = new PassThrough()
+    axios.post.mockResolvedValue({
+      status: 200,
+      data: upstream
+    })
+
+    const responsePromise = startOpenAITestRequest({
+      apiKey: 'cr_test_key_12345',
+      model: 'gpt-5.6-luna'
+    })
+
+    await waitForAxiosPost()
+    upstream.end(
+      'data: {"type":"response.failed","response":{"status":"failed","error":{"message":"Model unavailable for this workspace"}}}\n\n'
+    )
+
+    const response = await responsePromise
+    expect(response.text).toContain('"success":false')
+    expect(response.text).toContain('[E006] Model not available')
   })
 
   it('keeps HTTP status-specific error codes for non-200 relay responses', async () => {

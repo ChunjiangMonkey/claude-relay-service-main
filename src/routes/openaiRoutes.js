@@ -418,7 +418,6 @@ const handleResponses = async (req, res) => {
       incomingHeaders: incoming,
       accessToken,
       account,
-      accountId,
       isStream,
       apiKeyId: apiKeyData.id,
       model: upstreamRequestedModel

@@ -2,6 +2,8 @@ const crypto = require('crypto')
 const { mapToErrorCode } = require('./errorSanitizer')
 
 const DEFAULT_CODEX_TEST_MODEL = 'gpt-5.5'
+const CODEX_TEST_CLIENT_VERSION = '0.144.1'
+const CODEX_TEST_ORIGINATOR = 'codex_cli_rs'
 const CODEX_TEST_INSTRUCTIONS =
   "You are Codex, based on GPT-5. You are running as a coding agent in the Codex CLI on a user's computer.\n\nReply with a short account connectivity check."
 
@@ -32,6 +34,69 @@ function generateSessionString() {
 
 function generateCodexTestSessionId() {
   return `codex_test_${crypto.randomUUID()}_${randomHex(8)}`
+}
+
+function createCodexTestRequestContext() {
+  const installationId = crypto.randomUUID()
+  const sessionId = crypto.randomUUID()
+  const threadId = sessionId
+  const turnId = crypto.randomUUID()
+  const windowId = `${threadId}:0`
+  const turnMetadata = {
+    installation_id: installationId,
+    session_id: sessionId,
+    thread_id: threadId,
+    turn_id: turnId,
+    window_id: windowId,
+    request_kind: 'turn',
+    thread_source: 'user',
+    turn_started_at_unix_ms: Date.now()
+  }
+
+  return {
+    installationId,
+    sessionId,
+    threadId,
+    turnId,
+    windowId,
+    turnMetadata,
+    turnMetadataJson: JSON.stringify(turnMetadata)
+  }
+}
+
+function applyCodexTestRequestContext(payload, context) {
+  if (!payload || typeof payload !== 'object' || !context) {
+    return payload
+  }
+
+  payload.prompt_cache_key = context.threadId
+  payload.client_metadata = {
+    'x-codex-installation-id': context.installationId,
+    session_id: context.sessionId,
+    thread_id: context.threadId,
+    turn_id: context.turnId,
+    'x-codex-window-id': context.windowId,
+    'x-codex-turn-metadata': context.turnMetadataJson
+  }
+  return payload
+}
+
+function createCodexTestIncomingHeaders(context) {
+  if (!context) {
+    return {}
+  }
+
+  return {
+    version: CODEX_TEST_CLIENT_VERSION,
+    'user-agent': `${CODEX_TEST_ORIGINATOR}/${CODEX_TEST_CLIENT_VERSION}`,
+    originator: CODEX_TEST_ORIGINATOR,
+    'session-id': context.sessionId,
+    'thread-id': context.threadId,
+    'x-client-request-id': context.threadId,
+    'x-codex-window-id': context.windowId,
+    'x-codex-turn-metadata': context.turnMetadataJson,
+    'x-codex-beta-features': 'remote_compaction_v2'
+  }
 }
 
 function getCodexCompatibleModel(requestedModel = null) {
@@ -135,7 +200,7 @@ function applyCodexResponsesLitePayload(payload) {
 }
 
 function createCodexTestPayload(model = DEFAULT_CODEX_TEST_MODEL, options = {}) {
-  const { prompt = '你是什么模型', stream = true } = options
+  const { prompt = '你是什么模型', stream = true, context = null } = options
   const compatibleModel = getCodexCompatibleModel(model)
   const payload = {
     model: compatibleModel,
@@ -150,7 +215,7 @@ function createCodexTestPayload(model = DEFAULT_CODEX_TEST_MODEL, options = {}) 
     stream,
     store: false
   }
-  return applyCodexResponsesLitePayload(payload)
+  return applyCodexTestRequestContext(payload, context)
 }
 
 /**
@@ -460,6 +525,16 @@ function extractErrorMessage(json, fallback) {
   if (json.error?.message) {
     return json.error.message
   }
+  // Responses SSE terminal events: {response: {error: {message: "..."}}}
+  if (json.response?.error?.message) {
+    return json.response.error.message
+  }
+  if (typeof json.response?.error === 'string') {
+    return json.response.error
+  }
+  if (json.response?.incomplete_details?.reason) {
+    return json.response.incomplete_details.reason
+  }
   // {msg: {error: {message: "..."}}} (relay 包装格式)
   if (json.msg?.error?.message) {
     return json.msg.error.message
@@ -492,6 +567,11 @@ module.exports = {
   sendStreamTestRequest,
   CODEX_TEST_INSTRUCTIONS,
   DEFAULT_CODEX_TEST_MODEL,
+  CODEX_TEST_CLIENT_VERSION,
+  CODEX_TEST_ORIGINATOR,
+  createCodexTestRequestContext,
+  applyCodexTestRequestContext,
+  createCodexTestIncomingHeaders,
   getCodexCompatibleModel,
   getCodexDefaultReasoningEffort,
   applyCodexModelDefaults,

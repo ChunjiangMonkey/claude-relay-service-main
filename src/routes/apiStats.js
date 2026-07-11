@@ -12,6 +12,8 @@ const {
   createCodexTestPayload,
   extractErrorMessage,
   generateCodexTestSessionId,
+  CODEX_TEST_CLIENT_VERSION,
+  CODEX_TEST_ORIGINATOR,
   sanitizeErrorMsg
 } = require('../utils/testPayloadHelper')
 const modelsConfig = require('../../config/models')
@@ -1372,9 +1374,13 @@ router.post('/api-key/test-openai', async (req, res) => {
           'Content-Type': 'application/json',
           Accept: 'text/event-stream',
           'x-api-key': apiKey,
-          'User-Agent': 'codex_cli_rs/1.0.0',
-          originator: 'codex_cli_rs',
-          session_id: sessionId
+          'User-Agent': `${CODEX_TEST_ORIGINATOR}/${CODEX_TEST_CLIENT_VERSION}`,
+          originator: CODEX_TEST_ORIGINATOR,
+          version: CODEX_TEST_CLIENT_VERSION,
+          session_id: sessionId,
+          'session-id': sessionId,
+          'thread-id': sessionId,
+          'x-client-request-id': sessionId
         },
         timeout: 60000,
         responseType: 'stream',

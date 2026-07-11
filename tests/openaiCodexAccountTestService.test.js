@@ -99,7 +99,16 @@ describe('openaiCodexAccountTestService', () => {
       model: 'gpt-5.5',
       stream: true,
       store: false,
-      instructions: expect.stringContaining('You are Codex')
+      instructions: expect.stringContaining('You are Codex'),
+      prompt_cache_key: expect.any(String),
+      client_metadata: {
+        'x-codex-installation-id': expect.any(String),
+        session_id: expect.any(String),
+        thread_id: expect.any(String),
+        turn_id: expect.any(String),
+        'x-codex-window-id': expect.any(String),
+        'x-codex-turn-metadata': expect.any(String)
+      }
     })
     expect(payload.max_output_tokens).toBeUndefined()
     expect(payload.input).toEqual([
@@ -117,10 +126,20 @@ describe('openaiCodexAccountTestService', () => {
     expect(requestConfig.headers).toMatchObject({
       authorization: 'Bearer plain-access-token',
       'chatgpt-account-id': 'chatgpt-account-1',
+      version: '0.144.1',
+      'user-agent': 'codex_cli_rs/0.144.1',
+      originator: 'codex_cli_rs',
       accept: 'text/event-stream',
       'content-type': 'application/json',
       'x-relay-capture-skip': 'admin-openai-account-test'
     })
+    expect(requestConfig.headers['session-id']).toBe(payload.client_metadata.session_id)
+    expect(requestConfig.headers['thread-id']).toBe(payload.client_metadata.thread_id)
+    expect(requestConfig.headers['x-client-request-id']).toBe(payload.client_metadata.thread_id)
+    expect(requestConfig.headers['x-codex-window-id']).toBe(
+      payload.client_metadata['x-codex-window-id']
+    )
+    expect(payload.prompt_cache_key).toBe(payload.client_metadata.thread_id)
   })
 
   it('normalizes dated gpt-5 model names for the Codex backend only', async () => {
@@ -282,6 +301,36 @@ describe('openaiCodexAccountTestService', () => {
       error: '[E003] Authentication failed',
       httpStatus: 401,
       model: 'gpt-5.5'
+    })
+  })
+
+  it('extracts nested errors from response.failed SSE events', async () => {
+    const upstream = new PassThrough()
+    axios.post.mockResolvedValue({
+      status: 200,
+      data: upstream
+    })
+
+    const resultPromise = openaiCodexAccountTestService.testAccountConnectionSync(
+      'acct-1',
+      'gpt-5.6-luna'
+    )
+    await Promise.resolve()
+    upstream.end(
+      `data: ${JSON.stringify({
+        type: 'response.failed',
+        response: {
+          status: 'failed',
+          error: { message: 'Model unavailable for this workspace' }
+        }
+      })}\n\n`
+    )
+
+    await expect(resultPromise).resolves.toMatchObject({
+      success: false,
+      error: '[E006] Model not available',
+      status: 'failed',
+      model: 'gpt-5.6-luna'
     })
   })
 
