@@ -103,6 +103,7 @@ const openaiAccountService = require('../src/services/account/openaiAccountServi
 const openaiResponsesAccountService = require('../src/services/account/openaiResponsesAccountService')
 const openaiResponsesRelayService = require('../src/services/relay/openaiResponsesRelayService')
 const openaiRoutes = require('../src/routes/openaiRoutes')
+const { applyCodexResponsesLitePayload } = require('../src/utils/testPayloadHelper')
 
 function createHash(value) {
   return crypto.createHash('sha256').update(value).digest('hex')
@@ -224,6 +225,56 @@ describe('openai responses payload toggles', () => {
     await openaiRoutes.handleResponses(req, createRes())
 
     expect(req.body.reasoning).toEqual({ effort: 'high', summary: 'auto' })
+  })
+
+  test('does not apply the internal Lite payload contract to openai-responses accounts', async () => {
+    const req = createReq({
+      body: {
+        model: 'gpt-5.6-luna',
+        input: 'hello'
+      },
+      apiKeyOverrides: {
+        enableOpenAIResponsesCodexAdaptation: false,
+        enableOpenAIResponsesPayloadRules: false
+      }
+    })
+
+    await openaiRoutes.handleResponses(req, createRes())
+
+    expect(openaiResponsesRelayService.handleRequest).toHaveBeenCalled()
+    expect(req.body).toEqual({
+      model: 'gpt-5.6-luna',
+      input: 'hello'
+    })
+  })
+
+  test('does not duplicate Lite input items from an official Codex CLI payload', () => {
+    const payload = {
+      model: 'gpt-5.6-terra',
+      input: [
+        {
+          type: 'additional_tools',
+          role: 'developer',
+          tools: [{ type: 'function', name: 'shell_command' }]
+        },
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'hello' }]
+        }
+      ],
+      tool_choice: 'auto',
+      parallel_tool_calls: false,
+      reasoning: { effort: 'high', context: 'all_turns' },
+      include: ['reasoning.encrypted_content']
+    }
+
+    const originalInput = JSON.parse(JSON.stringify(payload.input))
+    applyCodexResponsesLitePayload(payload)
+
+    expect(payload.input).toEqual(originalInput)
+    expect(payload.input.filter((item) => item.type === 'additional_tools')).toHaveLength(1)
+    expect(payload.reasoning).toEqual({ effort: 'high', context: 'all_turns' })
   })
 
   test('applies Codex adaptation only when adaptation toggle is on', async () => {
@@ -407,6 +458,7 @@ describe('openai responses payload toggles', () => {
       body: {
         model: 'gpt-5.6-luna',
         input: 'hello',
+        tool_choice: 'required',
         stream: false
       }
     })
@@ -419,7 +471,19 @@ describe('openai responses payload toggles', () => {
     })
     expect(axios.post.mock.calls[0][1].reasoning).toEqual({
       effort: 'medium',
-      summary: 'none'
+      context: 'all_turns'
+    })
+    expect(axios.post.mock.calls[0][1]).toMatchObject({
+      tool_choice: 'auto',
+      parallel_tool_calls: false,
+      text: { verbosity: 'low' },
+      include: ['reasoning.encrypted_content']
+    })
+    expect(axios.post.mock.calls[0][1].instructions).toBeUndefined()
+    expect(axios.post.mock.calls[0][1].input[0]).toEqual({
+      type: 'additional_tools',
+      role: 'developer',
+      tools: []
     })
     expect(res.headers).toMatchObject({
       'x-codex-turn-state': 'turn-state-1',

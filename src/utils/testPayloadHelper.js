@@ -65,10 +65,72 @@ function applyCodexModelDefaults(payload) {
     return payload
   }
   if (!payload.reasoning || typeof payload.reasoning !== 'object') {
-    payload.reasoning = { effort: reasoningEffort, summary: 'none' }
+    payload.reasoning = { effort: reasoningEffort }
   } else if (!payload.reasoning.effort) {
     payload.reasoning.effort = reasoningEffort
   }
+  return payload
+}
+
+function isCodexResponsesLitePayload(payload) {
+  return (
+    Array.isArray(payload?.input) && payload.input.some((item) => item?.type === 'additional_tools')
+  )
+}
+
+function applyCodexResponsesLitePayload(payload) {
+  applyCodexModelDefaults(payload)
+  if (!payload || !getCodexDefaultReasoningEffort(payload.model)) {
+    return payload
+  }
+
+  payload.reasoning = { ...(payload.reasoning || {}), context: 'all_turns' }
+  if (payload.reasoning.summary === 'none') {
+    delete payload.reasoning.summary
+  }
+  if (!payload.text || typeof payload.text !== 'object') {
+    payload.text = { verbosity: 'low' }
+  } else if (!payload.text.verbosity) {
+    payload.text.verbosity = 'low'
+  }
+
+  if (isCodexResponsesLitePayload(payload)) {
+    return payload
+  }
+
+  const tools = Array.isArray(payload.tools) ? payload.tools : []
+  const instructions = typeof payload.instructions === 'string' ? payload.instructions : ''
+  let { input } = payload
+  if (!Array.isArray(input)) {
+    input = [
+      {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: String(input || '') }]
+      }
+    ]
+  }
+
+  const prefix = [{ type: 'additional_tools', role: 'developer', tools }]
+  if (instructions) {
+    prefix.push({
+      type: 'message',
+      role: 'developer',
+      content: [{ type: 'input_text', text: instructions }]
+    })
+  }
+
+  payload.input = [...prefix, ...input]
+  delete payload.instructions
+  payload.tool_choice = 'auto'
+  payload.parallel_tool_calls = false
+  payload.include = Array.from(
+    new Set([
+      ...(Array.isArray(payload.include) ? payload.include : []),
+      'reasoning.encrypted_content'
+    ])
+  )
+  delete payload.tools
   return payload
 }
 
@@ -88,7 +150,7 @@ function createCodexTestPayload(model = DEFAULT_CODEX_TEST_MODEL, options = {}) 
     stream,
     store: false
   }
-  return applyCodexModelDefaults(payload)
+  return applyCodexResponsesLitePayload(payload)
 }
 
 /**
@@ -432,5 +494,7 @@ module.exports = {
   DEFAULT_CODEX_TEST_MODEL,
   getCodexCompatibleModel,
   getCodexDefaultReasoningEffort,
-  applyCodexModelDefaults
+  applyCodexModelDefaults,
+  isCodexResponsesLitePayload,
+  applyCodexResponsesLitePayload
 }

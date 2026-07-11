@@ -169,8 +169,27 @@ describe('openaiCodexAccountTestService', () => {
     await expect(resultPromise).resolves.toMatchObject({ success: true, model })
     expect(axios.post.mock.calls[0][1]).toMatchObject({
       model,
-      reasoning: { effort: reasoningEffort, summary: 'none' }
+      tool_choice: 'auto',
+      parallel_tool_calls: false,
+      reasoning: { effort: reasoningEffort, context: 'all_turns' },
+      text: { verbosity: 'low' },
+      include: ['reasoning.encrypted_content']
     })
+    expect(axios.post.mock.calls[0][1].instructions).toBeUndefined()
+    expect(axios.post.mock.calls[0][1].tools).toBeUndefined()
+    expect(axios.post.mock.calls[0][1].input).toEqual([
+      { type: 'additional_tools', role: 'developer', tools: [] },
+      {
+        type: 'message',
+        role: 'developer',
+        content: [{ type: 'input_text', text: expect.stringContaining('You are Codex') }]
+      },
+      {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: '你是什么模型' }]
+      }
+    ])
     expect(axios.post.mock.calls[0][2].headers).toMatchObject({
       'x-openai-internal-codex-responses-lite': 'true'
     })

@@ -21,7 +21,7 @@ const {
 } = require('../utils/requestDetailHelper')
 const requestBodyRuleService = require('../services/requestBodyRuleService')
 const { buildCodexUpstreamHeaders } = require('../utils/openaiCodexUpstreamHeaders')
-const { applyCodexModelDefaults } = require('../utils/testPayloadHelper')
+const { applyCodexResponsesLitePayload } = require('../utils/testPayloadHelper')
 
 // Codex CLI 系统提示词（非 Codex CLI 客户端请求时注入，统一端点也使用）
 const CODEX_CLI_INSTRUCTIONS =
@@ -361,8 +361,6 @@ const handleResponses = async (req, res) => {
       }
     }
 
-    applyCodexModelDefaults(req.body)
-
     // 从最终请求体中提取 service_tier，用于后续费用计算
     req._serviceTier = req.body?.service_tier || null
 
@@ -400,6 +398,8 @@ const handleResponses = async (req, res) => {
       logger.info(`🔀 Using OpenAI-Responses relay service for account: ${account.name}`)
       return await openaiResponsesRelayService.handleRequest(req, res, account, apiKeyData)
     }
+
+    applyCodexResponsesLitePayload(req.body)
 
     if (schedulerModel !== requestedModel) {
       logger.info(
