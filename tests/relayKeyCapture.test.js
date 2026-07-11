@@ -43,6 +43,12 @@ describe('buildCodexUpstreamHeaders', () => {
         version: '2025-03-01',
         'openai-beta': 'beta-a',
         session_id: 'sess-1',
+        'session-id': 'sess-modern',
+        'thread-id': 'thread-1',
+        'x-codex-installation-id': 'installation-1',
+        'x-codex-turn-state': 'turn-state-1',
+        'x-codex-beta-features': 'feature-a',
+        'user-agent': 'codex_cli_rs/1.2.3',
         authorization: 'should-not-pass-through'
       },
       accessToken: 'access-token',
@@ -56,6 +62,12 @@ describe('buildCodexUpstreamHeaders', () => {
       version: '2025-03-01',
       'openai-beta': 'beta-a',
       session_id: 'sess-1',
+      'session-id': 'sess-modern',
+      'thread-id': 'thread-1',
+      'x-codex-installation-id': 'installation-1',
+      'x-codex-turn-state': 'turn-state-1',
+      'x-codex-beta-features': 'feature-a',
+      'user-agent': 'codex_cli_rs/1.2.3',
       authorization: 'Bearer access-token',
       'chatgpt-account-id': 'acct-123',
       host: 'chatgpt.com',
@@ -84,5 +96,37 @@ describe('buildCodexUpstreamHeaders', () => {
       'content-type': 'application/json',
       'x-relay-key-id': 'relay-key-1'
     })
+  })
+
+  it('selects the Responses Lite route for GPT-5.6 models', () => {
+    const headers = buildCodexUpstreamHeaders({
+      incomingHeaders: {
+        'x-openai-internal-codex-responses-lite': 'false'
+      },
+      accessToken: 'access-token',
+      account: { accountId: 'acct-123' },
+      accountId: 'fallback-acct',
+      isStream: true,
+      apiKeyId: null,
+      model: 'gpt-5.6-luna'
+    })
+
+    expect(headers['x-openai-internal-codex-responses-lite']).toBe('true')
+  })
+
+  it('does not select the Responses Lite route for GPT-5.5', () => {
+    const headers = buildCodexUpstreamHeaders({
+      incomingHeaders: {
+        'x-openai-internal-codex-responses-lite': 'true'
+      },
+      accessToken: 'access-token',
+      account: { accountId: 'acct-123' },
+      accountId: 'fallback-acct',
+      isStream: true,
+      apiKeyId: null,
+      model: 'gpt-5.5'
+    })
+
+    expect(headers['x-openai-internal-codex-responses-lite']).toBeUndefined()
   })
 })

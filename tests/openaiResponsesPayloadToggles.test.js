@@ -209,6 +209,23 @@ describe('openai responses payload toggles', () => {
     )
   })
 
+  test('preserves an explicit GPT-5.6 reasoning configuration', async () => {
+    const req = createReq({
+      body: {
+        model: 'gpt-5.6-sol',
+        reasoning: { effort: 'high', summary: 'auto' }
+      },
+      apiKeyOverrides: {
+        enableOpenAIResponsesCodexAdaptation: false,
+        enableOpenAIResponsesPayloadRules: false
+      }
+    })
+
+    await openaiRoutes.handleResponses(req, createRes())
+
+    expect(req.body.reasoning).toEqual({ effort: 'high', summary: 'auto' })
+  })
+
   test('applies Codex adaptation only when adaptation toggle is on', async () => {
     const req = createReq({
       body: {
@@ -354,6 +371,63 @@ describe('openai responses payload toggles', () => {
       service_tier: 'priority',
       store: false
     })
+  })
+
+  test('selects the Responses Lite route when forwarding GPT-5.6 through an openai account', async () => {
+    unifiedOpenAIScheduler.selectAccountForApiKey.mockResolvedValue({
+      accountId: 'openai-1',
+      accountType: 'openai'
+    })
+    openaiAccountService.getAccount.mockResolvedValue({
+      id: 'openai-1',
+      name: 'OpenAI Account',
+      accessToken: 'encrypted-token',
+      accountId: 'chatgpt-account-1'
+    })
+    axios.post.mockResolvedValue({
+      status: 200,
+      data: {
+        model: 'gpt-5.6-luna',
+        usage: {
+          input_tokens: 8,
+          output_tokens: 3,
+          total_tokens: 11
+        }
+      },
+      headers: {
+        'x-codex-turn-state': 'turn-state-1',
+        'x-codex-primary-used-percent': '12',
+        'x-ratelimit-remaining-requests': '99',
+        'retry-after': '3',
+        'set-cookie': 'must-not-pass'
+      }
+    })
+
+    const req = createReq({
+      body: {
+        model: 'gpt-5.6-luna',
+        input: 'hello',
+        stream: false
+      }
+    })
+
+    const res = createRes()
+    await openaiRoutes.handleResponses(req, res)
+
+    expect(axios.post.mock.calls[0][2].headers).toMatchObject({
+      'x-openai-internal-codex-responses-lite': 'true'
+    })
+    expect(axios.post.mock.calls[0][1].reasoning).toEqual({
+      effort: 'medium',
+      summary: 'none'
+    })
+    expect(res.headers).toMatchObject({
+      'x-codex-turn-state': 'turn-state-1',
+      'x-codex-primary-used-percent': '12',
+      'x-ratelimit-remaining-requests': '99',
+      'retry-after': '3'
+    })
+    expect(res.headers['set-cookie']).toBeUndefined()
   })
 
   test('normalizes payload-rule gpt-5 aliases for openai scheduling without applying full Codex adaptation', async () => {

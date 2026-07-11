@@ -45,10 +45,38 @@ function getCodexCompatibleModel(requestedModel = null) {
   return requestedModel
 }
 
+function getCodexDefaultReasoningEffort(model) {
+  if (model === 'gpt-5.6-sol') {
+    return 'low'
+  }
+  if (model === 'gpt-5.6-terra' || model === 'gpt-5.6-luna') {
+    return 'medium'
+  }
+  return null
+}
+
+function applyCodexModelDefaults(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return payload
+  }
+  const compatibleModel = getCodexCompatibleModel(payload.model)
+  const reasoningEffort = getCodexDefaultReasoningEffort(compatibleModel)
+  if (!reasoningEffort) {
+    return payload
+  }
+  if (!payload.reasoning || typeof payload.reasoning !== 'object') {
+    payload.reasoning = { effort: reasoningEffort, summary: 'none' }
+  } else if (!payload.reasoning.effort) {
+    payload.reasoning.effort = reasoningEffort
+  }
+  return payload
+}
+
 function createCodexTestPayload(model = DEFAULT_CODEX_TEST_MODEL, options = {}) {
   const { prompt = '你是什么模型', stream = true } = options
-  return {
-    model: getCodexCompatibleModel(model),
+  const compatibleModel = getCodexCompatibleModel(model)
+  const payload = {
+    model: compatibleModel,
     input: [
       {
         type: 'message',
@@ -60,6 +88,7 @@ function createCodexTestPayload(model = DEFAULT_CODEX_TEST_MODEL, options = {}) 
     stream,
     store: false
   }
+  return applyCodexModelDefaults(payload)
 }
 
 /**
@@ -401,5 +430,7 @@ module.exports = {
   sendStreamTestRequest,
   CODEX_TEST_INSTRUCTIONS,
   DEFAULT_CODEX_TEST_MODEL,
-  getCodexCompatibleModel
+  getCodexCompatibleModel,
+  getCodexDefaultReasoningEffort,
+  applyCodexModelDefaults
 }

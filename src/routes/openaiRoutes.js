@@ -21,6 +21,7 @@ const {
 } = require('../utils/requestDetailHelper')
 const requestBodyRuleService = require('../services/requestBodyRuleService')
 const { buildCodexUpstreamHeaders } = require('../utils/openaiCodexUpstreamHeaders')
+const { applyCodexModelDefaults } = require('../utils/testPayloadHelper')
 
 // Codex CLI 系统提示词（非 Codex CLI 客户端请求时注入，统一端点也使用）
 const CODEX_CLI_INSTRUCTIONS =
@@ -360,6 +361,8 @@ const handleResponses = async (req, res) => {
       }
     }
 
+    applyCodexModelDefaults(req.body)
+
     // 从最终请求体中提取 service_tier，用于后续费用计算
     req._serviceTier = req.body?.service_tier || null
 
@@ -417,7 +420,8 @@ const handleResponses = async (req, res) => {
       account,
       accountId,
       isStream,
-      apiKeyId: apiKeyData.id
+      apiKeyId: apiKeyData.id,
+      model: upstreamRequestedModel
     })
     if (!compactRoute) {
       req.body['store'] = false
@@ -653,10 +657,20 @@ const handleResponses = async (req, res) => {
     }
 
     // 透传关键诊断头，避免传递不安全或与传输相关的头
-    const passThroughHeaderKeys = ['openai-version', 'x-request-id', 'openai-processing-ms']
-    for (const key of passThroughHeaderKeys) {
-      const val = upstream.headers?.[key]
-      if (val !== undefined) {
+    const passThroughHeaderKeys = new Set([
+      'openai-version',
+      'x-request-id',
+      'openai-processing-ms',
+      'retry-after'
+    ])
+    for (const [rawKey, val] of Object.entries(upstream.headers || {})) {
+      const key = rawKey.toLowerCase()
+      if (
+        val !== undefined &&
+        (passThroughHeaderKeys.has(key) ||
+          key.startsWith('x-codex-') ||
+          key.startsWith('x-ratelimit-'))
+      ) {
         res.setHeader(key, val)
       }
     }

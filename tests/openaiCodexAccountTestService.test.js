@@ -151,6 +151,31 @@ describe('openaiCodexAccountTestService', () => {
     })
   })
 
+  it.each([
+    ['gpt-5.6-sol', 'low'],
+    ['gpt-5.6-terra', 'medium'],
+    ['gpt-5.6-luna', 'medium']
+  ])('uses the GPT-5.6 protocol for %s', async (model, reasoningEffort) => {
+    const upstream = new PassThrough()
+    axios.post.mockResolvedValue({
+      status: 200,
+      data: upstream
+    })
+
+    const resultPromise = openaiCodexAccountTestService.testAccountConnectionSync('acct-1', model)
+    await Promise.resolve()
+    upstream.end(createCompletedSse(model))
+
+    await expect(resultPromise).resolves.toMatchObject({ success: true, model })
+    expect(axios.post.mock.calls[0][1]).toMatchObject({
+      model,
+      reasoning: { effort: reasoningEffort, summary: 'none' }
+    })
+    expect(axios.post.mock.calls[0][2].headers).toMatchObject({
+      'x-openai-internal-codex-responses-lite': 'true'
+    })
+  })
+
   it('refreshes an expired token before testing', async () => {
     const expiredAccount = createAccount({ expiresAt: '2020-01-01T00:00:00.000Z' })
     const refreshedAccount = createAccount({

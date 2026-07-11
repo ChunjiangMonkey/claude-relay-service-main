@@ -336,7 +336,8 @@ async function runPreparedTest({
       account,
       accountId,
       isStream: true,
-      apiKeyId: null
+      apiKeyId: null,
+      model: testModel
     })
     headers[CAPTURE_SKIP_HEADER] = CAPTURE_SKIP_REASON
 
