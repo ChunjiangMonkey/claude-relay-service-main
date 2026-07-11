@@ -106,7 +106,7 @@ describe('openaiCodexAccountTestService', () => {
       {
         type: 'message',
         role: 'user',
-        content: [{ type: 'input_text', text: 'hi' }]
+        content: [{ type: 'input_text', text: '你是什么模型' }]
       }
     ])
     expect(requestConfig).toMatchObject({

@@ -46,7 +46,7 @@ function getCodexCompatibleModel(requestedModel = null) {
 }
 
 function createCodexTestPayload(model = DEFAULT_CODEX_TEST_MODEL, options = {}) {
-  const { prompt = 'hi', stream = true } = options
+  const { prompt = '你是什么模型', stream = true } = options
   return {
     model: getCodexCompatibleModel(model),
     input: [
