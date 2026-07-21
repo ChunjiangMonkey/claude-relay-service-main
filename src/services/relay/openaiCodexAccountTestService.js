@@ -4,6 +4,7 @@ const openaiAccountService = require('../account/openaiAccountService')
 const ProxyHelper = require('../../utils/proxyHelper')
 const logger = require('../../utils/logger')
 const { buildCodexUpstreamHeaders } = require('../../utils/openaiCodexUpstreamHeaders')
+const { extractCodexUsageHeaders } = require('../../utils/codexUsage')
 const {
   createCodexTestPayload,
   createCodexTestRequestContext,
@@ -363,17 +364,42 @@ async function runPreparedTest({ account, accessToken, proxy, model, onContent, 
 
     const upstream = await axios.post(CODEX_TEST_ENDPOINT, payload, requestConfig)
     upstreamStream = upstream.data
+    const codexUsage = extractCodexUsageHeaders(upstream.headers)
+
+    if (codexUsage) {
+      try {
+        await openaiAccountService.updateCodexUsageSnapshot(account.id, codexUsage)
+      } catch (error) {
+        logger.error(`Failed to persist Codex usage snapshot for test ${account.id}:`, error)
+      }
+    }
 
     if (upstream.status !== 200) {
       const { body, truncated } = await readLimitedErrorBody(upstreamStream)
       const fallback = `Codex test request returned HTTP ${upstream.status}`
       const error = extractErrorFromBody(body, fallback)
+
+      if (upstream.status === 401 || upstream.status === 402) {
+        try {
+          await openaiAccountService.markAccountUnauthorized(
+            account.id,
+            `Codex 账户测试认证失败（HTTP ${upstream.status}）：${error}`
+          )
+        } catch (statusError) {
+          logger.error(
+            `Failed to update Codex authorization status for ${account.id}:`,
+            statusError
+          )
+        }
+      }
+
       return {
         success: false,
         error: sanitizeCodexTestError(truncated ? `${error} (truncated)` : error, upstream.status),
         httpStatus: upstream.status,
         latencyMs: Date.now() - startedAt,
         model: testModel,
+        codexUsage,
         timestamp: new Date().toISOString()
       }
     }
@@ -400,8 +426,21 @@ async function runPreparedTest({ account, accessToken, proxy, model, onContent, 
         responseId: state.responseId,
         responseModel: state.responseModel,
         status: state.status,
+        usage: state.usage,
+        codexUsage,
         timestamp: new Date().toISOString()
       }
+    }
+
+    const latestAccount = await openaiAccountService.getAccount(account.id)
+    if (latestAccount?.status === 'unauthorized') {
+      await openaiAccountService.updateAccount(account.id, {
+        status: 'active',
+        schedulable: 'true',
+        errorMessage: null,
+        unauthorizedAt: null,
+        lastAuthorizedAt: new Date().toISOString()
+      })
     }
 
     return {
@@ -413,6 +452,7 @@ async function runPreparedTest({ account, accessToken, proxy, model, onContent, 
       responseModel: state.responseModel,
       status: state.status || 'completed',
       usage: state.usage,
+      codexUsage,
       parseErrors: state.parseErrors,
       timestamp: new Date().toISOString()
     }
@@ -470,7 +510,8 @@ async function testAccountConnection(
       error: result.error,
       latencyMs: result.latencyMs,
       responseId: result.responseId,
-      model: result.responseModel || result.model
+      model: result.responseModel || result.model,
+      codexUsage: result.codexUsage || null
     })
     return result
   } catch (error) {
