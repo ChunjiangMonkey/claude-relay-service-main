@@ -13,6 +13,7 @@ jest.mock('../src/services/account/claudeAccountService', () => ({
   clearExpiredOpusRateLimit: jest.fn(),
   isAccountOpusRateLimited: jest.fn(),
   markAccountOpusRateLimited: jest.fn(),
+  markAccountModelRateLimited: jest.fn(),
   updateSessionWindowStatus: jest.fn(),
   clearInternalErrors: jest.fn(),
   isAccountOverloaded: jest.fn(),
@@ -164,6 +165,7 @@ describe('Claude Relay Agent View auxiliary request handling', () => {
     })
     claudeAccountService.getValidAccessToken.mockResolvedValue('access-token')
     claudeAccountService.isAccountOpusRateLimited.mockResolvedValue(false)
+    claudeAccountService.markAccountModelRateLimited.mockResolvedValue(undefined)
     upstreamErrorHelper.markTempUnavailable.mockResolvedValue(undefined)
 
     jest.spyOn(claudeRelayService, '_getProxyAgent').mockResolvedValue(null)
@@ -219,6 +221,7 @@ describe('Claude Relay Agent View auxiliary request handling', () => {
     )
 
     expect(unifiedClaudeScheduler.markAccountRateLimited).not.toHaveBeenCalled()
+    expect(claudeAccountService.markAccountModelRateLimited).not.toHaveBeenCalled()
     expect(upstreamErrorHelper.markTempUnavailable).not.toHaveBeenCalledWith(
       'claude-account-1',
       'claude-official',
@@ -227,7 +230,7 @@ describe('Claude Relay Agent View auxiliary request handling', () => {
     )
   })
 
-  it('keeps normal 429 account protection unchanged', async () => {
+  it('keeps normal 429 model protection unchanged', async () => {
     await claudeRelayService.relayRequest(
       createRequestBody(),
       { id: 'key-1', name: 'API Key 1' },
@@ -236,17 +239,12 @@ describe('Claude Relay Agent View auxiliary request handling', () => {
       { 'x-app': 'cli-bg' }
     )
 
-    expect(unifiedClaudeScheduler.markAccountRateLimited).toHaveBeenCalledWith(
+    expect(claudeAccountService.markAccountModelRateLimited).toHaveBeenCalledWith(
       'claude-account-1',
-      'claude-official',
-      'session-1',
+      'sonnet',
       1767225600
     )
-    expect(upstreamErrorHelper.markTempUnavailable).toHaveBeenCalledWith(
-      'claude-account-1',
-      'claude-official',
-      429,
-      30
-    )
+    expect(unifiedClaudeScheduler.markAccountRateLimited).not.toHaveBeenCalled()
+    expect(upstreamErrorHelper.markTempUnavailable).not.toHaveBeenCalled()
   })
 })

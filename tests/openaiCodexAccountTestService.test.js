@@ -171,7 +171,7 @@ describe('openaiCodexAccountTestService', () => {
   })
 
   it.each([
-    ['gpt-5.6-sol', 'low'],
+    ['gpt-5.6-sol', 'medium'],
     ['gpt-5.6-terra', 'medium'],
     ['gpt-5.6-luna', 'medium']
   ])('uses the GPT-5.6 protocol for %s', async (model, reasoningEffort) => {
@@ -281,7 +281,7 @@ describe('openaiCodexAccountTestService', () => {
       success: false,
       error: '[E004] Rate limit exceeded',
       httpStatus: 429,
-      model: 'gpt-5.5'
+      model: 'gpt-5.6-sol'
     })
   })
 
@@ -300,7 +300,7 @@ describe('openaiCodexAccountTestService', () => {
       success: false,
       error: '[E003] Authentication failed',
       httpStatus: 401,
-      model: 'gpt-5.5'
+      model: 'gpt-5.6-sol'
     })
   })
 
@@ -343,7 +343,7 @@ describe('openaiCodexAccountTestService', () => {
       success: false,
       error: 'Resource not found',
       statusCode: 404,
-      model: 'gpt-5.5'
+      model: 'gpt-5.6-sol'
     })
     expect(axios.post).not.toHaveBeenCalled()
   })

@@ -400,7 +400,7 @@ const platformFallbackModels = {
   'claude-console': 'claude-sonnet-4-5-20250929',
   gemini: 'gemini-2.5-pro',
   'gemini-api': 'gemini-2.5-flash',
-  openai: 'gpt-5.5',
+  openai: 'gpt-5.6-sol',
   'openai-responses': 'gpt-5',
   droid: 'claude-sonnet-4-5-20250929',
   ccr: 'claude-sonnet-4-5-20250929'

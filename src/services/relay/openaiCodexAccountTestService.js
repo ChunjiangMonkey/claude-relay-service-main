@@ -14,7 +14,7 @@ const {
 } = require('../../utils/testPayloadHelper')
 const { getSafeMessage, mapToErrorCode } = require('../../utils/errorSanitizer')
 
-const DEFAULT_CODEX_TEST_MODEL = 'gpt-5.5'
+const DEFAULT_CODEX_TEST_MODEL = 'gpt-5.6-sol'
 const CODEX_TEST_ENDPOINT = 'https://chatgpt.com/backend-api/codex/responses'
 const CAPTURE_SKIP_HEADER = 'x-relay-capture-skip'
 const CAPTURE_SKIP_REASON = 'admin-openai-account-test'

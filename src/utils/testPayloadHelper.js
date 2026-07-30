@@ -1,7 +1,7 @@
 const crypto = require('crypto')
 const { mapToErrorCode } = require('./errorSanitizer')
 
-const DEFAULT_CODEX_TEST_MODEL = 'gpt-5.5'
+const DEFAULT_CODEX_TEST_MODEL = 'gpt-5.6-sol'
 const CODEX_TEST_CLIENT_VERSION = '0.144.1'
 const CODEX_TEST_ORIGINATOR = 'codex_cli_rs'
 const CODEX_TEST_INSTRUCTIONS =
@@ -200,7 +200,12 @@ function applyCodexResponsesLitePayload(payload) {
 }
 
 function createCodexTestPayload(model = DEFAULT_CODEX_TEST_MODEL, options = {}) {
-  const { prompt = '你是什么模型', stream = true, context = null } = options
+  const {
+    prompt = '你是什么模型',
+    stream = true,
+    context = null,
+    reasoningEffort = 'medium'
+  } = options
   const compatibleModel = getCodexCompatibleModel(model)
   const payload = {
     model: compatibleModel,
@@ -212,6 +217,7 @@ function createCodexTestPayload(model = DEFAULT_CODEX_TEST_MODEL, options = {}) 
       }
     ],
     instructions: CODEX_TEST_INSTRUCTIONS,
+    reasoning: { effort: reasoningEffort },
     stream,
     store: false
   }

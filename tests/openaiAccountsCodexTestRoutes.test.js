@@ -6,7 +6,7 @@ jest.mock('../src/middleware/auth', () => ({
 }))
 
 jest.mock('../src/services/relay/openaiCodexAccountTestService', () => ({
-  DEFAULT_CODEX_TEST_MODEL: 'gpt-5.5',
+  DEFAULT_CODEX_TEST_MODEL: 'gpt-5.6-sol',
   testAccountConnection: jest.fn(async (_accountId, res, model, options) => {
     if (options?.onResult) {
       await options.onResult({
@@ -102,7 +102,7 @@ describe('OpenAI/Codex account test admin routes', () => {
     expect(redis.setAccountLastTestTime).toHaveBeenCalledWith('account-1', 'openai')
   })
 
-  it('runs sync tests with gpt-5.5 by default and saves history', async () => {
+  it('runs sync tests with gpt-5.6-sol by default and saves history', async () => {
     const response = await request(buildApp())
       .post('/admin/openai-accounts/account-1/test-sync')
       .send({})
@@ -110,12 +110,12 @@ describe('OpenAI/Codex account test admin routes', () => {
     expect(response.status).toBe(200)
     expect(openaiCodexAccountTestService.testAccountConnectionSync).toHaveBeenCalledWith(
       'account-1',
-      'gpt-5.5'
+      'gpt-5.6-sol'
     )
     expect(redis.saveAccountTestResult).toHaveBeenCalledWith(
       'account-1',
       'openai',
-      expect.objectContaining({ success: true, model: 'gpt-5.5' })
+      expect.objectContaining({ success: true, model: 'gpt-5.6-sol' })
     )
     expect(redis.setAccountLastTestTime).toHaveBeenCalledWith('account-1', 'openai')
   })

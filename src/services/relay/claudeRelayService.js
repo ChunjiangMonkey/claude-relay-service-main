@@ -856,8 +856,16 @@ class ClaudeRelayService {
               ? response.headers['anthropic-ratelimit-unified-reset']
               : null
             const parsedResetTimestamp = resetHeader ? parseInt(resetHeader, 10) : NaN
+            const isAgentViewAuxiliaryRequest = this._isAgentViewAuxiliaryRequest(
+              requestBody,
+              clientHeaders
+            )
 
-            if (requestModelFamily && !Number.isNaN(parsedResetTimestamp)) {
+            if (isAgentViewAuxiliaryRequest) {
+              logger.warn(
+                `🚫 Agent View auxiliary request hit 429 for account ${accountId}; skipping rate-limit marking`
+              )
+            } else if (requestModelFamily && !Number.isNaN(parsedResetTimestamp)) {
               // 模型级限额：只停用该模型家族，不改写为账号级限流
               await claudeAccountService.markAccountModelRateLimited(
                 accountId,
@@ -2267,8 +2275,16 @@ class ClaudeRelayService {
               ? res.headers['anthropic-ratelimit-unified-reset']
               : null
             const parsedResetTimestamp = resetHeader ? parseInt(resetHeader, 10) : NaN
+            const isAgentViewAuxiliaryRequest = this._isAgentViewAuxiliaryRequest(
+              body,
+              clientHeaders
+            )
 
-            if (requestModelFamily) {
+            if (isAgentViewAuxiliaryRequest) {
+              logger.warn(
+                `🚫 [Stream] Agent View auxiliary request hit 429 for account ${accountId}; skipping rate-limit marking`
+              )
+            } else if (requestModelFamily) {
               if (!Number.isNaN(parsedResetTimestamp)) {
                 // 模型级限额：只停用该模型家族，不改写为账号级限流
                 await claudeAccountService.markAccountModelRateLimited(
@@ -2301,15 +2317,7 @@ class ClaudeRelayService {
               const rateLimitResetTimestamp = Number.isNaN(parsedResetTimestamp)
                 ? null
                 : parsedResetTimestamp
-              const isAgentViewAuxiliaryRequest = this._isAgentViewAuxiliaryRequest(
-                body,
-                clientHeaders
-              )
-              if (isAgentViewAuxiliaryRequest) {
-                logger.warn(
-                  `🚫 [Stream] Agent View auxiliary request hit 429 for account ${accountId}; skipping account-level rate-limit marking`
-                )
-              } else if (!rateLimitResetTimestamp) {
+              if (!rateLimitResetTimestamp) {
                 // 无权威 reset 头的 429 大概率不是真实限流，不标记账号、不进入冷却，直接透传错误
                 logger.warn(
                   `⚠️ [Stream] 429 without reset header for account ${accountId}, skipping rate limit marking`
@@ -2970,7 +2978,11 @@ class ClaudeRelayService {
               : null
             const parsedResetTimestamp = resetHeader ? parseInt(resetHeader, 10) : NaN
 
-            if (requestModelFamily && !Number.isNaN(parsedResetTimestamp)) {
+            if (this._isAgentViewAuxiliaryRequest(body, clientHeaders)) {
+              logger.warn(
+                `🚫 [Stream] Agent View auxiliary request hit rate limit at stream end for account ${accountId}; skipping rate-limit marking`
+              )
+            } else if (requestModelFamily && !Number.isNaN(parsedResetTimestamp)) {
               // 模型级限额：只停用该模型家族，不改写为账号级限流
               await claudeAccountService.markAccountModelRateLimited(
                 accountId,
@@ -2979,10 +2991,6 @@ class ClaudeRelayService {
               )
               logger.warn(
                 `🚫 [Stream] Account ${accountId} hit ${requestModelFamily} limit, resets at ${new Date(parsedResetTimestamp * 1000).toISOString()}`
-              )
-            } else if (this._isAgentViewAuxiliaryRequest(body, clientHeaders)) {
-              logger.warn(
-                `🚫 [Stream] Agent View auxiliary request hit rate limit at stream end for account ${accountId}; skipping account-level rate-limit marking`
               )
             } else if (Number.isNaN(parsedResetTimestamp)) {
               // 无权威 reset 头的 429 大概率不是真实限流，不标记账号、不进入冷却，直接透传错误
