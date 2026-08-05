@@ -676,6 +676,65 @@ class UnifiedOpenAIScheduler {
     }
   }
 
+  // ⏱️ 标记账户为临时不可用，并解除当前会话的粘性映射
+  async markAccountTemporarilyUnavailable(
+    accountId,
+    accountType,
+    sessionHash = null,
+    ttlSeconds = null,
+    statusCode = 500,
+    context = null
+  ) {
+    try {
+      let account = null
+      if (accountType === 'openai') {
+        account = await openaiAccountService.getAccount(accountId)
+      } else if (accountType === 'openai-responses') {
+        account = await openaiResponsesAccountService.getAccount(accountId)
+      }
+
+      const autoProtectionDisabled =
+        account?.disableAutoProtection === true || account?.disableAutoProtection === 'true'
+
+      let result
+      if (autoProtectionDisabled) {
+        const errorType = upstreamErrorHelper.classifyError(statusCode) || 'server_error'
+        await upstreamErrorHelper
+          .recordErrorHistory(accountId, accountType, statusCode, errorType, context)
+          .catch(() => {})
+        logger.info(
+          `🛡️ Account ${accountId} (${accountType}) has auto-protection disabled, skipping temporary cooldown`
+        )
+        result = {
+          success: true,
+          skipped: true,
+          reason: 'account_auto_protection_disabled'
+        }
+      } else {
+        result = await upstreamErrorHelper.markTempUnavailable(
+          accountId,
+          accountType,
+          statusCode,
+          ttlSeconds,
+          context
+        )
+      }
+
+      // 即使账号关闭了自动防护，也不要把当前失败会话继续粘在同一账号上。
+      if (sessionHash) {
+        await this._deleteSessionMapping(sessionHash)
+      }
+
+      return result
+    } catch (error) {
+      logger.error(
+        `❌ Failed to mark account temporarily unavailable: ${accountId} (${accountType})`,
+        error
+      )
+      return { success: false }
+    }
+  }
+
   // 🚫 标记账户为限流状态
   async markAccountRateLimited(accountId, accountType, sessionHash = null, resetsInSeconds = null) {
     try {

@@ -1,4 +1,5 @@
 const crypto = require('crypto')
+const { PassThrough } = require('stream')
 
 const mockRouter = {
   get: jest.fn(),
@@ -31,6 +32,7 @@ jest.mock('axios', () => ({
 
 jest.mock('../src/services/scheduler/unifiedOpenAIScheduler', () => ({
   selectAccountForApiKey: jest.fn(),
+  markAccountTemporarilyUnavailable: jest.fn(),
   markAccountRateLimited: jest.fn(),
   isAccountRateLimited: jest.fn().mockResolvedValue(false),
   removeAccountRateLimit: jest.fn(),
@@ -132,7 +134,8 @@ function createReq({
       openaiResponsesPayloadRules: [],
       ...apiKeyOverrides
     },
-    _fromUnifiedEndpoint: fromUnifiedEndpoint
+    _fromUnifiedEndpoint: fromUnifiedEndpoint,
+    on: jest.fn()
   }
 }
 
@@ -157,6 +160,18 @@ function createRes() {
     set: jest.fn((key, value) => {
       res.headers[key] = value
       return res
+    }),
+    flushHeaders: jest.fn(() => {
+      res.headersSent = true
+    }),
+    write: jest.fn((chunk) => {
+      res.headersSent = true
+      res.chunks = res.chunks || []
+      res.chunks.push(chunk)
+      return true
+    }),
+    end: jest.fn(() => {
+      res.writableEnded = true
     })
   }
   return res
@@ -179,6 +194,127 @@ describe('openai responses payload toggles', () => {
 
     openaiResponsesRelayService.handleRequest.mockResolvedValue({ ok: true })
     openaiAccountService.decrypt.mockReturnValue('decrypted-token')
+    unifiedOpenAIScheduler.markAccountTemporarilyUnavailable.mockResolvedValue({ success: true })
+  })
+
+  test('temporarily cools down an OAuth account after an HTTP 5xx response', async () => {
+    unifiedOpenAIScheduler.selectAccountForApiKey.mockResolvedValue({
+      accountId: 'openai-1',
+      accountType: 'openai'
+    })
+    openaiAccountService.getAccount.mockResolvedValue({
+      id: 'openai-1',
+      name: 'OpenAI Account',
+      accessToken: 'encrypted-token',
+      accountId: 'chatgpt-account-1'
+    })
+    axios.post.mockResolvedValue({
+      status: 503,
+      data: {
+        error: {
+          type: 'server_error',
+          message: 'Model is at capacity'
+        }
+      },
+      headers: {
+        'retry-after': '12',
+        'x-request-id': 'req-http-503'
+      }
+    })
+
+    const req = createReq({
+      body: {
+        model: 'gpt-5.6-sol',
+        prompt_cache_key: 'failed-http-session',
+        stream: false
+      },
+      userAgent: 'codex_cli_rs/0.146.0'
+    })
+    const res = createRes()
+
+    await openaiRoutes.handleResponses(req, res)
+
+    expect(unifiedOpenAIScheduler.markAccountTemporarilyUnavailable).toHaveBeenCalledWith(
+      'openai-1',
+      'openai',
+      createHash('failed-http-session'),
+      12,
+      503,
+      expect.objectContaining({
+        source: 'codex_http',
+        model: 'gpt-5.6-sol',
+        requestId: 'req-http-503'
+      })
+    )
+    expect(res.statusCode).toBe(503)
+    expect(res.payload.error.message).toBe('Model is at capacity')
+  })
+
+  test('cools down the OAuth account before closing a capacity-failed SSE stream', async () => {
+    const ActualSSEParser = jest.requireActual('../src/utils/sseParser').IncrementalSSEParser
+    const { IncrementalSSEParser } = require('../src/utils/sseParser')
+    IncrementalSSEParser.mockImplementationOnce(() => new ActualSSEParser())
+
+    unifiedOpenAIScheduler.selectAccountForApiKey.mockResolvedValue({
+      accountId: 'openai-1',
+      accountType: 'openai'
+    })
+    openaiAccountService.getAccount.mockResolvedValue({
+      id: 'openai-1',
+      name: 'OpenAI Account',
+      accessToken: 'encrypted-token',
+      accountId: 'chatgpt-account-1'
+    })
+
+    let resolveCooldown
+    unifiedOpenAIScheduler.markAccountTemporarilyUnavailable.mockReturnValue(
+      new Promise((resolve) => {
+        resolveCooldown = resolve
+      })
+    )
+
+    const upstreamStream = new PassThrough()
+    axios.post.mockResolvedValue({
+      status: 200,
+      data: upstreamStream,
+      headers: { 'x-request-id': 'req-sse-capacity' }
+    })
+
+    const req = createReq({
+      body: {
+        model: 'gpt-5.6-sol',
+        prompt_cache_key: 'failed-sse-session',
+        stream: true
+      },
+      userAgent: 'codex_cli_rs/0.146.0'
+    })
+    const res = createRes()
+
+    await openaiRoutes.handleResponses(req, res)
+    upstreamStream.end(
+      'data: {"type":"response.failed","response":{"status":"failed","error":{"message":"Model is at capacity"}}}\n\n'
+    )
+    await new Promise((resolve) => setImmediate(resolve))
+
+    expect(unifiedOpenAIScheduler.markAccountTemporarilyUnavailable).toHaveBeenCalledWith(
+      'openai-1',
+      'openai',
+      createHash('failed-sse-session'),
+      null,
+      503,
+      expect.objectContaining({
+        source: 'codex_sse',
+        requestId: 'req-sse-capacity'
+      })
+    )
+    expect(res.end).not.toHaveBeenCalled()
+    expect(res.write).not.toHaveBeenCalled()
+
+    resolveCooldown({ success: true })
+    await new Promise((resolve) => setImmediate(resolve))
+
+    expect(res.write).toHaveBeenCalledTimes(1)
+    expect(res.end).toHaveBeenCalledTimes(1)
   })
 
   test('keeps standard responses payload unchanged for openai-responses when both toggles are off', async () => {

@@ -12,6 +12,7 @@ function parseList(envValue) {
 
 const unstableTypes = new Set(parseList(process.env.UNSTABLE_ERROR_TYPES))
 const unstableKeywords = parseList(process.env.UNSTABLE_ERROR_KEYWORDS)
+const builtInUnstableKeywords = ['model is at capacity']
 const unstableStatusCodes = new Set([408, 499, 502, 503, 504, 522])
 
 function normalizeErrorPayload(payload) {
@@ -27,11 +28,18 @@ function normalizeErrorPayload(payload) {
     }
   }
 
-  if (payload.error && typeof payload.error === 'object') {
+  const nestedError =
+    payload.error && typeof payload.error === 'object'
+      ? payload.error
+      : payload.response?.error && typeof payload.response.error === 'object'
+        ? payload.response.error
+        : null
+
+  if (nestedError) {
     return {
-      type: payload.error.type || payload.error.error || payload.error.code,
-      code: payload.error.code || payload.error.error || payload.error.type,
-      message: payload.error.message || payload.error.msg || payload.message || payload.error.error
+      type: nestedError.type || nestedError.error || nestedError.code,
+      code: nestedError.code || nestedError.error || nestedError.type,
+      message: nestedError.message || nestedError.msg || payload.message || nestedError.error
     }
   }
 
@@ -60,6 +68,9 @@ function isUnstableUpstreamError(statusCode, payload) {
     return true
   }
   if (unstableTypes.has(lowerType) || unstableTypes.has(lowerCode)) {
+    return true
+  }
+  if (builtInUnstableKeywords.some((kw) => lowerMessage.includes(kw))) {
     return true
   }
   if (unstableKeywords.length > 0) {

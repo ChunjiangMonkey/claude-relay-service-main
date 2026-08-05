@@ -23,6 +23,8 @@ const requestBodyRuleService = require('../services/requestBodyRuleService')
 const { buildCodexUpstreamHeaders } = require('../utils/openaiCodexUpstreamHeaders')
 const { extractCodexUsageHeaders } = require('../utils/codexUsage')
 const { applyCodexResponsesLitePayload } = require('../utils/testPayloadHelper')
+const upstreamErrorHelper = require('../utils/upstreamErrorHelper')
+const { isUnstableUpstreamError } = require('../utils/unstableUpstreamHelper')
 
 // Codex CLI 系统提示词（非 Codex CLI 客户端请求时注入，统一端点也使用）
 const CODEX_CLI_INSTRUCTIONS =
@@ -257,6 +259,41 @@ const handleResponses = async (req, res) => {
   let account = null
   let proxy = null
   let accessToken = null
+  let unstableAccountMarkPromise = null
+
+  const markSelectedAccountTemporarilyUnavailable = (
+    statusCode,
+    ttlSeconds = null,
+    context = null
+  ) => {
+    if (!accountId || accountType !== 'openai') {
+      return Promise.resolve({ success: false, reason: 'no_openai_account_selected' })
+    }
+
+    if (!unstableAccountMarkPromise) {
+      logger.warn(
+        `⏱️ Marking OpenAI account ${accountId} temporarily unavailable after upstream ${statusCode}`
+      )
+      unstableAccountMarkPromise = unifiedOpenAIScheduler
+        .markAccountTemporarilyUnavailable(
+          accountId,
+          accountType,
+          sessionHash,
+          ttlSeconds,
+          statusCode,
+          context
+        )
+        .catch((markError) => {
+          logger.error(
+            `❌ Failed to mark OpenAI account ${accountId} temporarily unavailable:`,
+            markError
+          )
+          return { success: false }
+        })
+    }
+
+    return unstableAccountMarkPromise
+  }
 
   try {
     // 从中间件获取 API Key 数据
@@ -428,6 +465,20 @@ const handleResponses = async (req, res) => {
       } catch (codexError) {
         logger.error('⚠️ 更新 Codex 使用统计失败:', codexError)
       }
+    }
+
+    const upstreamErrorPayload = isStream ? null : upstream.data
+    if (isUnstableUpstreamError(upstream.status, upstreamErrorPayload)) {
+      const cooldownStatus = upstream.status >= 500 ? upstream.status : 503
+      await markSelectedAccountTemporarilyUnavailable(
+        cooldownStatus,
+        upstreamErrorHelper.parseRetryAfter(upstream.headers),
+        {
+          source: 'codex_http',
+          model: upstreamRequestedModel,
+          requestId: upstream.headers?.['x-request-id'] || null
+        }
+      )
     }
 
     // 处理 429 限流错误
@@ -644,6 +695,8 @@ const handleResponses = async (req, res) => {
     let usageReported = false
     let rateLimitDetected = false
     let rateLimitResetsInSeconds = null
+    let unstableStreamDetected = false
+    let responseCompleted = false
 
     if (!isStream) {
       // 非流式响应处理
@@ -720,8 +773,11 @@ const handleResponses = async (req, res) => {
 
     // 处理解析出的事件
     const processSSEEvent = (eventData) => {
+      let unstableEventDetected = false
+
       // 检查是否是 response.completed 事件
       if (eventData.type === 'response.completed' && eventData.response) {
+        responseCompleted = true
         // 从响应中获取真实的 model
         if (eventData.response.model) {
           actualModel = eventData.response.model
@@ -745,24 +801,56 @@ const handleResponses = async (req, res) => {
           )
         }
       }
+
+      const streamError = eventData.response?.error || eventData.error || eventData
+      if (isUnstableUpstreamError(200, streamError)) {
+        unstableStreamDetected = true
+        unstableEventDetected = true
+        void markSelectedAccountTemporarilyUnavailable(503, null, {
+          source: 'codex_sse',
+          model: upstreamRequestedModel,
+          requestId: upstream.headers?.['x-request-id'] || null,
+          errorBody: streamError
+        })
+      }
+
+      return unstableEventDetected
     }
 
-    upstream.data.on('data', (chunk) => {
+    upstream.data.on('data', async (chunk) => {
+      let waitForCooldown = false
       try {
-        // 转发数据给客户端
-        if (!res.destroyed) {
-          res.write(chunk)
-        }
-
         // 使用增量解析器处理数据
         const events = sseParser.feed(chunk.toString())
         for (const event of events) {
           if (event.type === 'data' && event.data) {
-            processSSEEvent(event.data)
+            waitForCooldown = processSSEEvent(event.data) || waitForCooldown
           }
         }
       } catch (error) {
         logger.error('Error processing OpenAI stream chunk:', error)
+      }
+
+      let streamPaused = false
+      try {
+        // 容量错误必须在透传给 Codex 前完成冷却写入，避免客户端立即重试时再次命中原账号。
+        if (waitForCooldown && unstableAccountMarkPromise) {
+          if (typeof upstream.data.pause === 'function') {
+            upstream.data.pause()
+            streamPaused = true
+          }
+          await unstableAccountMarkPromise
+        }
+
+        if (!res.destroyed) {
+          res.write(chunk)
+        }
+      } catch (error) {
+        logger.error('Error forwarding OpenAI stream chunk:', error)
+      } finally {
+        if (streamPaused && typeof upstream.data.resume === 'function') {
+          upstream.data.resume()
+        }
       }
     })
 
@@ -830,6 +918,10 @@ const handleResponses = async (req, res) => {
         }
       }
 
+      if (unstableAccountMarkPromise) {
+        await unstableAccountMarkPromise
+      }
+
       // 如果在流式响应中检测到限流
       if (rateLimitDetected) {
         logger.warn(`🚫 Processing rate limit for OpenAI account ${accountId} from stream`)
@@ -839,7 +931,7 @@ const handleResponses = async (req, res) => {
           sessionHash,
           rateLimitResetsInSeconds
         )
-      } else if (upstream.status === 200) {
+      } else if (!unstableStreamDetected && upstream.status === 200) {
         // 流式请求成功，检查并移除限流状态
         const isRateLimited = await unifiedOpenAIScheduler.isAccountRateLimited(accountId)
         if (isRateLimited) {
@@ -853,8 +945,16 @@ const handleResponses = async (req, res) => {
       res.end()
     })
 
-    upstream.data.on('error', (err) => {
+    upstream.data.on('error', async (err) => {
       logger.error('Upstream stream error:', err)
+      if (!responseCompleted) {
+        await markSelectedAccountTemporarilyUnavailable(502, null, {
+          source: 'codex_stream_transport',
+          model: upstreamRequestedModel,
+          requestId: upstream.headers?.['x-request-id'] || null,
+          errorCode: err?.code || null
+        })
+      }
       if (!res.headersSent) {
         res.status(502).json({ error: { message: 'Upstream stream error' } })
       } else {
@@ -877,6 +977,30 @@ const handleResponses = async (req, res) => {
     logger.error('Proxy to ChatGPT codex/responses failed:', error)
     // 优先使用主动设置的 statusCode，然后是上游响应的状态码，最后默认 500
     const status = error.statusCode || error.response?.status || 500
+
+    const upstreamFailureStatus = error.response?.status
+    const networkFailureStatus =
+      error.code === 'ETIMEDOUT' || error.code === 'ECONNABORTED'
+        ? 504
+        : ['ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'EAI_AGAIN', 'ENOTFOUND'].includes(error.code)
+          ? 502
+          : null
+
+    if (
+      accountId &&
+      (isUnstableUpstreamError(upstreamFailureStatus, error.response?.data) || networkFailureStatus)
+    ) {
+      const cooldownStatus =
+        Number(upstreamFailureStatus) >= 500
+          ? Number(upstreamFailureStatus)
+          : networkFailureStatus || 503
+      await markSelectedAccountTemporarilyUnavailable(cooldownStatus, null, {
+        source: 'codex_request_transport',
+        model: req.body?.model || null,
+        requestId: error.response?.headers?.['x-request-id'] || null,
+        errorCode: error.code || null
+      })
+    }
 
     if ((status === 401 || status === 402) && accountId) {
       const statusLabel = status === 401 ? '401错误' : '402错误'
