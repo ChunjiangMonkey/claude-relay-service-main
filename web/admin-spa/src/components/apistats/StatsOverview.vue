@@ -256,30 +256,28 @@
           </div>
 
           <div v-else-if="account.platform === 'openai'" class="mt-3">
-            <div v-if="account.codexUsage" class="space-y-2">
+            <div v-if="getCodexUsageWindows(account.codexUsage).length > 0" class="space-y-2">
               <div
-                v-for="type in ['primary', 'secondary']"
-                :key="`${account.key}-${type}`"
+                v-for="window in getCodexUsageWindows(account.codexUsage)"
+                :key="`${account.key}-${window.key}`"
                 class="quota-row"
               >
                 <div class="quota-header">
-                  <span class="quota-tag" :class="type === 'primary' ? 'tag-indigo' : 'tag-blue'">
-                    {{ getCodexWindowLabel(type) }}
+                  <span class="quota-tag" :class="getCodexWindowTagClass(window.type)">
+                    {{ window.label }}
                   </span>
                   <span class="quota-percent">
-                    {{ formatCodexUsagePercent(account.codexUsage?.[type]) }}
+                    {{ formatCodexUsagePercent(window.usage) }}
                   </span>
                 </div>
                 <div class="progress-track">
                   <div
                     class="progress-bar"
-                    :class="getCodexUsageBarClass(account.codexUsage?.[type])"
-                    :style="{ width: getCodexUsageWidth(account.codexUsage?.[type]) }"
+                    :class="getCodexUsageBarClass(window.usage)"
+                    :style="{ width: getCodexUsageWidth(window.usage) }"
                   />
                 </div>
-                <div class="quota-foot">
-                  重置剩余 {{ formatCodexRemaining(account.codexUsage?.[type]) }}
-                </div>
+                <div class="quota-foot">重置剩余 {{ formatCodexRemaining(window.usage) }}</div>
               </div>
             </div>
             <p
@@ -302,6 +300,13 @@ import { storeToRefs } from 'pinia'
 import dayjs from 'dayjs'
 import { useApiStatsStore } from '@/stores/apistats'
 import { copyText, formatNumber, formatDate } from '@/utils/tools'
+import {
+  formatCodexRemaining,
+  formatCodexUsagePercent,
+  getCodexUsageWidth,
+  getCodexUsageWindows,
+  normalizeCodexUsagePercent
+} from '@/utils/codexUsage'
 
 const apiStatsStore = useApiStatsStore()
 const {
@@ -473,28 +478,6 @@ const getSessionProgressBarClass = (status, account) => {
   return 'bg-gradient-to-r from-blue-500 to-indigo-500'
 }
 
-const normalizeCodexUsagePercent = (usageItem) => {
-  if (!usageItem) return null
-  const percent =
-    typeof usageItem.usedPercent === 'number' && !Number.isNaN(usageItem.usedPercent)
-      ? usageItem.usedPercent
-      : null
-  const resetAfterSeconds =
-    typeof usageItem.resetAfterSeconds === 'number' && !Number.isNaN(usageItem.resetAfterSeconds)
-      ? usageItem.resetAfterSeconds
-      : null
-  const remainingSeconds =
-    typeof usageItem.remainingSeconds === 'number' ? usageItem.remainingSeconds : null
-  const resetAtMs = usageItem.resetAt ? Date.parse(usageItem.resetAt) : null
-  const resetElapsed =
-    resetAfterSeconds !== null &&
-    ((remainingSeconds !== null && remainingSeconds <= 0) ||
-      (resetAtMs !== null && !Number.isNaN(resetAtMs) && Date.now() >= resetAtMs))
-  if (resetElapsed) return 0
-  if (percent === null) return null
-  return Math.max(0, Math.min(100, percent))
-}
-
 const getCodexUsageBarClass = (usageItem) => {
   const percent = normalizeCodexUsagePercent(usageItem)
   if (percent === null) return 'bg-gradient-to-r from-gray-300 to-gray-400'
@@ -503,39 +486,11 @@ const getCodexUsageBarClass = (usageItem) => {
   return 'bg-gradient-to-r from-emerald-500 to-teal-500'
 }
 
-const getCodexUsageWidth = (usageItem) => {
-  const percent = normalizeCodexUsagePercent(usageItem)
-  if (percent === null) return '0%'
-  return `${percent}%`
+const getCodexWindowTagClass = (type) => {
+  if (type === 'fiveHour') return 'tag-indigo'
+  if (type === 'weekly') return 'tag-blue'
+  return 'tag-gray'
 }
-
-const formatCodexUsagePercent = (usageItem) => {
-  const percent = normalizeCodexUsagePercent(usageItem)
-  if (percent === null) return '--'
-  return `${percent.toFixed(1)}%`
-}
-
-const formatCodexRemaining = (usageItem) => {
-  if (!usageItem) return '--'
-  let seconds = usageItem.remainingSeconds
-  if (seconds === null || seconds === undefined) {
-    seconds = usageItem.resetAfterSeconds
-  }
-  if (seconds === null || seconds === undefined || Number.isNaN(Number(seconds))) {
-    return '--'
-  }
-  seconds = Math.max(0, Math.floor(Number(seconds)))
-  const days = Math.floor(seconds / 86400)
-  const hours = Math.floor((seconds % 86400) / 3600)
-  const minutes = Math.floor((seconds % 3600) / 60)
-  const secs = seconds % 60
-  if (days > 0) return hours > 0 ? `${days}天${hours}小时` : `${days}天`
-  if (hours > 0) return minutes > 0 ? `${hours}小时${minutes}分钟` : `${hours}小时`
-  if (minutes > 0) return `${minutes}分钟`
-  return `${secs}秒`
-}
-
-const getCodexWindowLabel = (type) => (type === 'secondary' ? '周限' : '5h')
 </script>
 
 <style scoped>
@@ -743,6 +698,10 @@ const getCodexWindowLabel = (type) => (type === 'secondary' ? '周限' : '5h')
 
 .tag-blue {
   @apply bg-sky-100 text-sky-600 dark:bg-sky-500/20 dark:text-sky-200;
+}
+
+.tag-gray {
+  @apply bg-gray-100 text-gray-600 dark:bg-gray-600 dark:text-gray-200;
 }
 
 .quota-percent {

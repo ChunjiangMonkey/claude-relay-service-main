@@ -15,6 +15,7 @@ const {
 } = require('../../utils/tokenRefreshLogger')
 const tokenRefreshService = require('../tokenRefreshService')
 const { createEncryptor } = require('../../utils/commonHelper')
+const { buildCodexUsageSnapshot, computeResetAtFromDelay } = require('../../utils/codexUsage')
 
 // 使用 commonHelper 的加密器
 const encryptor = createEncryptor('openai-account-salt')
@@ -33,85 +34,6 @@ setInterval(
   },
   10 * 60 * 1000
 )
-
-function toNumberOrNull(value) {
-  if (value === undefined || value === null || value === '') {
-    return null
-  }
-
-  const num = Number(value)
-  return Number.isFinite(num) ? num : null
-}
-
-function computeResetMeta(updatedAt, resetAfterSeconds) {
-  if (!updatedAt || resetAfterSeconds === null || resetAfterSeconds === undefined) {
-    return {
-      resetAt: null,
-      remainingSeconds: null
-    }
-  }
-
-  const updatedMs = Date.parse(updatedAt)
-  if (Number.isNaN(updatedMs)) {
-    return {
-      resetAt: null,
-      remainingSeconds: null
-    }
-  }
-
-  const resetMs = updatedMs + resetAfterSeconds * 1000
-  return {
-    resetAt: new Date(resetMs).toISOString(),
-    remainingSeconds: Math.max(0, Math.round((resetMs - Date.now()) / 1000))
-  }
-}
-
-function buildCodexUsageSnapshot(accountData) {
-  const updatedAt = accountData.codexUsageUpdatedAt
-
-  const primaryUsedPercent = toNumberOrNull(accountData.codexPrimaryUsedPercent)
-  const primaryResetAfterSeconds = toNumberOrNull(accountData.codexPrimaryResetAfterSeconds)
-  const primaryWindowMinutes = toNumberOrNull(accountData.codexPrimaryWindowMinutes)
-  const secondaryUsedPercent = toNumberOrNull(accountData.codexSecondaryUsedPercent)
-  const secondaryResetAfterSeconds = toNumberOrNull(accountData.codexSecondaryResetAfterSeconds)
-  const secondaryWindowMinutes = toNumberOrNull(accountData.codexSecondaryWindowMinutes)
-  const overSecondaryPercent = toNumberOrNull(accountData.codexPrimaryOverSecondaryLimitPercent)
-
-  const hasPrimaryData =
-    primaryUsedPercent !== null ||
-    primaryResetAfterSeconds !== null ||
-    primaryWindowMinutes !== null
-  const hasSecondaryData =
-    secondaryUsedPercent !== null ||
-    secondaryResetAfterSeconds !== null ||
-    secondaryWindowMinutes !== null
-
-  if (!updatedAt && !hasPrimaryData && !hasSecondaryData) {
-    return null
-  }
-
-  const primaryMeta = computeResetMeta(updatedAt, primaryResetAfterSeconds)
-  const secondaryMeta = computeResetMeta(updatedAt, secondaryResetAfterSeconds)
-
-  return {
-    updatedAt,
-    primary: {
-      usedPercent: primaryUsedPercent,
-      resetAfterSeconds: primaryResetAfterSeconds,
-      windowMinutes: primaryWindowMinutes,
-      resetAt: primaryMeta.resetAt,
-      remainingSeconds: primaryMeta.remainingSeconds
-    },
-    secondary: {
-      usedPercent: secondaryUsedPercent,
-      resetAfterSeconds: secondaryResetAfterSeconds,
-      windowMinutes: secondaryWindowMinutes,
-      resetAt: secondaryMeta.resetAt,
-      remainingSeconds: secondaryMeta.remainingSeconds
-    },
-    primaryOverSecondaryPercent: overSecondaryPercent
-  }
-}
 
 // 刷新访问令牌
 async function refreshAccessToken(refreshToken, proxy = null) {
@@ -713,9 +635,11 @@ async function getAllAccounts() {
       delete accountData.openaiOauth
       delete accountData.codexPrimaryUsedPercent
       delete accountData.codexPrimaryResetAfterSeconds
+      delete accountData.codexPrimaryResetAt
       delete accountData.codexPrimaryWindowMinutes
       delete accountData.codexSecondaryUsedPercent
       delete accountData.codexSecondaryResetAfterSeconds
+      delete accountData.codexSecondaryResetAt
       delete accountData.codexSecondaryWindowMinutes
       delete accountData.codexPrimaryOverSecondaryLimitPercent
       // 时间戳改由 codexUsage.updatedAt 暴露
@@ -1224,7 +1148,20 @@ async function updateCodexUsageSnapshot(accountId, usageSnapshot) {
     return
   }
 
-  updates.codexUsageUpdatedAt = new Date().toISOString()
+  const capturedAt = new Date()
+  const resetAtFieldMap = {
+    primaryResetAfterSeconds: 'codexPrimaryResetAt',
+    secondaryResetAfterSeconds: 'codexSecondaryResetAt'
+  }
+
+  for (const [key, field] of Object.entries(resetAtFieldMap)) {
+    const resetAt = computeResetAtFromDelay(usageSnapshot[key], capturedAt.getTime())
+    if (resetAt) {
+      updates[field] = resetAt
+    }
+  }
+
+  updates.codexUsageUpdatedAt = capturedAt.toISOString()
 
   const client = redisClient.getClientSafe()
   await client.hset(`${OPENAI_ACCOUNT_KEY_PREFIX}${accountId}`, updates)
