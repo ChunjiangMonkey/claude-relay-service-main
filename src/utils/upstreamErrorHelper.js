@@ -172,17 +172,66 @@ const classifyError = (statusCode) => {
   return null
 }
 
+const parseDurationSeconds = (value) => {
+  if (value === undefined || value === null || value === '') {
+    return null
+  }
+
+  const text = String(value).trim().toLowerCase()
+  if (/^\d+(?:\.\d+)?$/.test(text)) {
+    return Math.max(1, Math.ceil(Number(text)))
+  }
+
+  const unitPattern = /(\d+(?:\.\d+)?)(ms|[smhd])/g
+  const unitSeconds = { ms: 0.001, s: 1, m: 60, h: 3600, d: 86400 }
+  let totalSeconds = 0
+  let consumed = ''
+  let match
+
+  while ((match = unitPattern.exec(text)) !== null) {
+    consumed += match[0]
+    totalSeconds += Number(match[1]) * unitSeconds[match[2]]
+  }
+
+  if (consumed === text && totalSeconds > 0) {
+    return Math.max(1, Math.ceil(totalSeconds))
+  }
+  return null
+}
+
+const parseRetryAfterMessage = (payload) => {
+  if (!payload) {
+    return null
+  }
+
+  let message = payload
+  if (typeof payload === 'object') {
+    message = payload.error?.message || payload.response?.error?.message || payload.message || null
+  }
+  if (typeof message !== 'string') {
+    return null
+  }
+
+  const match = message.match(/(?:try again|retry)[^\n.]*?\bin\s+(\d+(?:\.\d+)?(?:ms|[smhd]))/i)
+  return match ? parseDurationSeconds(match[1]) : null
+}
+
 // 解析 429 响应头中的重置时间（返回秒数）
 const parseRetryAfter = (headers) => {
   if (!headers) {
     return null
   }
 
+  const normalizedHeaders = {}
+  for (const [key, value] of Object.entries(headers)) {
+    normalizedHeaders[key.toLowerCase()] = Array.isArray(value) ? value[0] : value
+  }
+
   // 标准 Retry-After 头（秒数或 HTTP 日期）
-  const retryAfter = headers['retry-after']
+  const retryAfter = normalizedHeaders['retry-after']
   if (retryAfter) {
-    const seconds = parseInt(retryAfter, 10)
-    if (!isNaN(seconds) && seconds > 0) {
+    const seconds = parseDurationSeconds(retryAfter)
+    if (seconds) {
       return seconds
     }
     const date = new Date(retryAfter)
@@ -195,7 +244,7 @@ const parseRetryAfter = (headers) => {
   }
 
   // Anthropic 限流重置头（ISO 时间）
-  const anthropicReset = headers['anthropic-ratelimit-unified-reset']
+  const anthropicReset = normalizedHeaders['anthropic-ratelimit-unified-reset']
   if (anthropicReset) {
     const date = new Date(anthropicReset)
     if (!isNaN(date.getTime())) {
@@ -207,10 +256,13 @@ const parseRetryAfter = (headers) => {
   }
 
   // OpenAI/Codex 限流重置头
-  const xReset = headers['x-ratelimit-reset-requests'] || headers['x-codex-ratelimit-reset']
+  const xReset =
+    normalizedHeaders['x-ratelimit-reset-tokens'] ||
+    normalizedHeaders['x-ratelimit-reset-requests'] ||
+    normalizedHeaders['x-codex-ratelimit-reset']
   if (xReset) {
-    const seconds = parseInt(xReset, 10)
-    if (!isNaN(seconds) && seconds > 0) {
+    const seconds = parseDurationSeconds(xReset)
+    if (seconds) {
       return seconds
     }
   }
@@ -518,7 +570,9 @@ module.exports = {
   clearTempUnavailable,
   getAllTempUnavailable,
   classifyError,
+  parseDurationSeconds,
   parseRetryAfter,
+  parseRetryAfterMessage,
   sanitizeErrorForClient,
   recordErrorHistory,
   getErrorHistory,

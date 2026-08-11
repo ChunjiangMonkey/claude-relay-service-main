@@ -372,7 +372,9 @@ const handleResponses = async (req, res) => {
 
     const requestedModel = req.body?.model || null
     const schedulerModel = getCodexCompatibleModel(requestedModel)
-    const isStream = req.body?.stream !== false // 默认为流式（兼容现有行为）
+    // Compact is a unary JSON endpoint and its canonical payload has no `stream` field.
+    // Treating an omitted field as streaming corrupts both successful responses and errors.
+    const isStream = compactRoute ? false : req.body?.stream !== false
 
     if (schedulerModel !== requestedModel) {
       logger.info(
@@ -393,7 +395,12 @@ const handleResponses = async (req, res) => {
       return await openaiResponsesRelayService.handleRequest(req, res, account, apiKeyData)
     }
 
-    applyCodexResponsesLitePayload(req.body)
+    // `/responses/compact` already has its own canonical payload contract. The ordinary
+    // Responses Lite adapter adds fields such as `tool_choice` and `include`, which the
+    // compact endpoint rejects.
+    if (!compactRoute) {
+      applyCodexResponsesLitePayload(req.body)
+    }
 
     if (schedulerModel !== requestedModel) {
       logger.info(
@@ -485,7 +492,8 @@ const handleResponses = async (req, res) => {
     if (upstream.status === 429) {
       logger.warn(`🚫 Rate limit detected for OpenAI account ${accountId} (Codex API)`)
 
-      // 解析响应体中的限流信息
+      // 解析响应体和响应头中的限流信息。TPM 限流通常只通过 Retry-After
+      // 或错误消息给出几秒钟的等待时间，不能错误地按账号级 60 分钟限流处理。
       let resetsInSeconds = null
       let errorData = null
 
@@ -514,9 +522,15 @@ const handleResponses = async (req, res) => {
           errorData = upstream.data
         }
 
-        // 提取重置时间
-        if (errorData && errorData.error && errorData.error.resets_in_seconds) {
-          resetsInSeconds = errorData.error.resets_in_seconds
+        const bodyResetSeconds = Number(errorData?.error?.resets_in_seconds)
+        const headerResetSeconds = upstreamErrorHelper.parseRetryAfter(upstream.headers)
+        const messageResetSeconds = upstreamErrorHelper.parseRetryAfterMessage(errorData)
+        resetsInSeconds =
+          Number.isFinite(bodyResetSeconds) && bodyResetSeconds > 0
+            ? Math.ceil(bodyResetSeconds)
+            : headerResetSeconds || messageResetSeconds
+
+        if (resetsInSeconds) {
           logger.info(
             `🕐 Codex rate limit will reset in ${resetsInSeconds} seconds (${Math.ceil(resetsInSeconds / 60)} minutes / ${Math.ceil(resetsInSeconds / 3600)} hours)`
           )
@@ -544,6 +558,11 @@ const handleResponses = async (req, res) => {
           message: 'The usage limit has been reached',
           resets_in_seconds: resetsInSeconds
         }
+      }
+
+      const upstreamRetryAfter = upstream.headers?.['retry-after']
+      if (upstreamRetryAfter || resetsInSeconds) {
+        res.setHeader('Retry-After', String(upstreamRetryAfter || resetsInSeconds))
       }
 
       if (isStream) {
@@ -1197,8 +1216,12 @@ async function handleImages(req, res) {
 
       if (upstream.status === 429) {
         logger.warn(`🚫 Rate limit detected for OpenAI account ${accountId} (images bridge)`)
+        const bodyResetSeconds = Number(errorData?.error?.resets_in_seconds)
         const resetsInSeconds =
-          (errorData && errorData.error && errorData.error.resets_in_seconds) || null
+          Number.isFinite(bodyResetSeconds) && bodyResetSeconds > 0
+            ? Math.ceil(bodyResetSeconds)
+            : upstreamErrorHelper.parseRetryAfter(upstream.headers) ||
+              upstreamErrorHelper.parseRetryAfterMessage(errorData)
 
         // 标记账户为限流状态
         await unifiedOpenAIScheduler.markAccountRateLimited(
@@ -1214,6 +1237,10 @@ async function handleImages(req, res) {
             message: 'The usage limit has been reached',
             resets_in_seconds: resetsInSeconds
           }
+        }
+        const upstreamRetryAfter = upstream.headers?.['retry-after']
+        if (upstreamRetryAfter || resetsInSeconds) {
+          res.setHeader('Retry-After', String(upstreamRetryAfter || resetsInSeconds))
         }
         return res.status(429).json(errorResponse)
       }

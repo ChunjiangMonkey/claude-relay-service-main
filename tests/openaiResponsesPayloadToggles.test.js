@@ -250,6 +250,95 @@ describe('openai responses payload toggles', () => {
     expect(res.payload.error.message).toBe('Model is at capacity')
   })
 
+  test('uses Retry-After for a transient Codex TPM 429 instead of the one-hour fallback', async () => {
+    unifiedOpenAIScheduler.selectAccountForApiKey.mockResolvedValue({
+      accountId: 'openai-1',
+      accountType: 'openai'
+    })
+    openaiAccountService.getAccount.mockResolvedValue({
+      id: 'openai-1',
+      name: 'OpenAI Account',
+      accessToken: 'encrypted-token',
+      accountId: 'chatgpt-account-1'
+    })
+    axios.post.mockResolvedValue({
+      status: 429,
+      data: {
+        error: {
+          type: 'rate_limit_exceeded',
+          message: 'Rate limit reached for gpt-5.6-sol. Please try again in 10.632s.'
+        }
+      },
+      headers: {
+        'retry-after': '10.632',
+        'x-request-id': 'req-tpm-429'
+      }
+    })
+
+    const req = createReq({
+      body: {
+        model: 'gpt-5.6-sol',
+        prompt_cache_key: 'large-session',
+        stream: false
+      },
+      userAgent: 'codex_cli_rs/0.146.0'
+    })
+    const res = createRes()
+
+    await openaiRoutes.handleResponses(req, res)
+
+    expect(unifiedOpenAIScheduler.markAccountRateLimited).toHaveBeenCalledWith(
+      'openai-1',
+      'openai',
+      createHash('large-session'),
+      11
+    )
+    expect(res.statusCode).toBe(429)
+    expect(res.headers['Retry-After']).toBe('10.632')
+  })
+
+  test('prefers an authoritative usage reset in the 429 body over Retry-After', async () => {
+    unifiedOpenAIScheduler.selectAccountForApiKey.mockResolvedValue({
+      accountId: 'openai-1',
+      accountType: 'openai'
+    })
+    openaiAccountService.getAccount.mockResolvedValue({
+      id: 'openai-1',
+      name: 'OpenAI Account',
+      accessToken: 'encrypted-token',
+      accountId: 'chatgpt-account-1'
+    })
+    axios.post.mockResolvedValue({
+      status: 429,
+      data: {
+        error: {
+          type: 'usage_limit_reached',
+          message: 'The usage limit has been reached',
+          resets_in_seconds: 7200
+        }
+      },
+      headers: { 'retry-after': '12' }
+    })
+
+    const req = createReq({
+      body: {
+        model: 'gpt-5.6-sol',
+        prompt_cache_key: 'quota-session',
+        stream: false
+      },
+      userAgent: 'codex_cli_rs/0.146.0'
+    })
+
+    await openaiRoutes.handleResponses(req, createRes())
+
+    expect(unifiedOpenAIScheduler.markAccountRateLimited).toHaveBeenCalledWith(
+      'openai-1',
+      'openai',
+      createHash('quota-session'),
+      7200
+    )
+  })
+
   test('cools down the OAuth account before closing a capacity-failed SSE stream', async () => {
     const ActualSSEParser = jest.requireActual('../src/utils/sseParser').IncrementalSSEParser
     const { IncrementalSSEParser } = require('../src/utils/sseParser')
@@ -820,5 +909,65 @@ describe('openai responses payload toggles', () => {
     expect(req.body.model).toBe('o1-mini')
     expect(req.body.prompt_cache_key).toBe('compact-key')
     expect(req.body.instructions).toBe(openaiRoutes.CODEX_CLI_INSTRUCTIONS)
+  })
+
+  test('forwards GPT-5.6 compact requests as unary JSON without Responses-only fields', async () => {
+    unifiedOpenAIScheduler.selectAccountForApiKey.mockResolvedValue({
+      accountId: 'openai-1',
+      accountType: 'openai'
+    })
+    openaiAccountService.getAccount.mockResolvedValue({
+      id: 'openai-1',
+      name: 'OpenAI Account',
+      accessToken: 'encrypted-token',
+      accountId: 'chatgpt-account-1'
+    })
+    axios.post.mockResolvedValue({
+      status: 200,
+      data: {
+        output: [
+          {
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: 'compacted state' }]
+          }
+        ]
+      },
+      headers: { 'x-request-id': 'req-compact-1' }
+    })
+
+    const compactBody = {
+      model: 'gpt-5.6-sol',
+      input: [
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'hello' }]
+        }
+      ],
+      instructions: 'Compact the conversation.',
+      parallel_tool_calls: false,
+      reasoning: { effort: 'medium', summary: 'auto' },
+      prompt_cache_key: 'compact-gpt-5.6-session',
+      text: { verbosity: 'low' }
+    }
+    const req = createReq({
+      path: '/v1/responses/compact',
+      body: compactBody,
+      userAgent: 'codex_cli_rs/0.146.0'
+    })
+    const res = createRes()
+
+    await openaiRoutes.handleResponses(req, res)
+
+    expect(axios.post.mock.calls[0][0]).toBe(
+      'https://chatgpt.com/backend-api/codex/responses/compact'
+    )
+    expect(axios.post.mock.calls[0][1]).toEqual(compactBody)
+    expect(axios.post.mock.calls[0][1].tool_choice).toBeUndefined()
+    expect(axios.post.mock.calls[0][1].include).toBeUndefined()
+    expect(axios.post.mock.calls[0][2].responseType).toBeUndefined()
+    expect(res.headers['Content-Type']).toBe('application/json')
+    expect(res.payload.output[0].content[0].text).toBe('compacted state')
   })
 })

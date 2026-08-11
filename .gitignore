@@ -9,6 +9,7 @@ pnpm-debug.log*
 .env
 .env.*
 !.env.example
+.key
 
 # Claude specific directories
 .claude/
